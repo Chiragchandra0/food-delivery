@@ -1,1122 +1,9 @@
-import subprocess
-import threading
-import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
-import time
-from glob import glob
-import os
-import sys
-import customtkinter as ctk
-import shutil
-import zipfile
-
-def resource_path(relative_path):
-    try:
-        if getattr(sys, 'frozen', False):
-            base_path = sys._MEIPASS
-        else:
-            base_path = os.path.abspath(".")
-        return os.path.join(base_path, relative_path)
-    except Exception:
-        return relative_path
-
-ADB_PATH = resource_path(r'adb.exe')
-
-# Colors
-BG           = "#ffffff"
-CONT         = "#D8E0F2"
-ENTRY_BG     = "#ffffff"
-TABLE_BG     = "#ffffff"
-BTN_GREEN    = "#8fce00"
-BTN_GREEN_HV = "#4CAF50"
-BTN_WHITE    = "#EDEDED"
-BTN_WHITE_HV = "#E8E8E8"
-BTN_EXP      = "#1D338A"
-BTN_EXP_HOV  = "#1A244A"
-
-# Functions
-
-def run_adb(*args):
-    try:
-        startupinfo = subprocess.STARTUPINFO()
-        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        startupinfo.wShowWindow = subprocess.SW_HIDE
-
-        result = subprocess.check_output(
-            [ADB_PATH, *args],
-            startupinfo=startupinfo,
-            stderr=subprocess.DEVNULL,
-            timeout=10
-        ).decode().strip()
-        return result
-    except Exception:
-        return "Not Found"
-
-def get_eid() -> str:
-    try:
-        run_adb("shell", "input", "tap", "600", "2250")
-        result = run_adb("shell",
-            "input keyevent KEYCODE_CALL; sleep 1; input text '*#06#'; "
-            "uiautomator dump --compressed /dev/stdout | grep -oE '[0-9]{32}'")
-        eid = result.strip()
-        return eid if eid else "Not Found"
-    except Exception:
-        return "Not Found"
-
-def get_serial() -> str:
-    try:
-        return run_adb("shell", "getprop", "ro.serialno") or " "
-    except Exception:
-        return "Not Found"
-
-arr = [] ### array which contain the values for version, rf cal etc.
-def get_version() -> str:
-    global arr
-    arr.clear()
-    try:
-        text = run_adb("shell",
-            "input keyevent KEYCODE_CALL; sleep 1; input text '*#12580*369#';",
-            " uiautomator dump --compressed /dev/stdout | grep string")
-        version = text
-
-        if not version or version == "Not Found":
-            arr.extend(["N/A", "N/A", "N/A", "N/A", "N/A"])
-            return "Not Found"
-
-        content = version.split()
-        a = content[50].strip('"') if len(content) > 50 else "N/A"
-        b = content[72].strip('"') if len(content) > 72 else "N/A"
-        c = content[94].strip('"') if len(content) > 94 else "N/A"
-        d = content[117].strip('"') if len(content) > 117 else "N/A"
-        e = content[140].strip('"') if len(content) > 140 else "N/A"
-        arr.extend([a, b, c, d, e])
-        return "Success"
-    except Exception:
-        arr.extend(["Error", "Error", "Error", "Error", "Error"])
-        return "Error"
-
-def get_imei() -> str:
-    try:
-        run_adb("shell", "input", "tap", "600", "2250")
-        result = run_adb("shell",
-            "input keyevent KEYCODE_CALL; sleep 1; input text '*#06#'; "
-            "uiautomator dump --compressed /dev/stdout | grep -oE '[0-9]{15}'")
-        imei = result.strip()
-        return imei[:15] if imei else "Not Found"
-    except Exception:
-        return "Not Found"
-
-def fetch_device_info() -> dict:
-    try:
-        run_adb("shell", "input", "tap", "600", "2250")
-        get_version()
-        serial       = run_adb("get-serialno")          or "N/A"
-        brand        = run_adb("shell", "getprop", "ro.product.brand")          or "N/A"
-        model        = run_adb("shell", "getprop", "ro.product.model")          or "N/A"
-        android_ver  = run_adb("shell", "getprop", "ro.build.version.release")  or "N/A"
-        arr.append(model) #5th index
-        
-        battery = "N/A"
-        battery_dump = run_adb("shell", "dumpsys", "battery")
-        if battery_dump != "Not Found":
-            for ln in battery_dump.splitlines():
-                if "level:" in ln:
-                    battery = ln.split(":")[-1].strip() + " %"
-                    break
-
-        wifi_mac = "N/A"
-        ip_dump = run_adb("shell", "ip", "addr", "show", "wlan0")
-        if ip_dump != "Not Found":
-            for ln in ip_dump.splitlines():
-                if "link/ether" in ln:
-                    wifi_mac = ln.split()[1]
-                    break
-
-        bt_mac = (
-            run_adb("shell", "settings", "get", "secure", "bluetooth_address") or "N/A"
-        )
-
-        return {
-            "Serial No": serial,
-            "Brand": brand.upper() if brand != "N/A" else "N/A",
-            "Model": model,
-            "Android Version": android_ver,
-            "Battery": battery,
-            "WiFi MAC": wifi_mac.upper() if wifi_mac != "N/A" else "N/A",
-            "Bluetooth MAC": bt_mac.upper() if bt_mac != "N/A" else "N/A",
-            "Base Version": arr[0] if len(arr) > 0 else "N/A",
-            "RF Cal": arr[3] if len(arr) > 3 else "N/A",
-            "HW Rev": arr[4] if len(arr) > 4 else "N/A"
-        }
-    except Exception as e:
-        return {"Error": f"Failed fetching info: {str(e)}"}
-
-class App(ctk.CTk):
-    FIELDS = [
-        ("Scan box EID :",  "eid",  get_eid),
-        ("Scan box S/N :",  "sn",   get_serial),
-        ("Scan box IMEI :", "imei", get_imei),
-    ]
-
-    def copy_to_clipboard(self, text: str):
-        try:
-            self.clipboard_clear()
-            self.clipboard_append(text)
-        except Exception:
-            pass
-
-    def _on_export(self):
-        try:
-            self._set_ui_busy(True)
-
-            if not hasattr(self, 'last_device_info') or not self.last_device_info:
-                messagebox.showerror("No Data", "Fetch device info first")
-                return
-
-            try:
-                file_path = filedialog.asksaveasfilename(
-                    defaultextension=".xlsx",
-                    filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")],
-                    initialfile="device_info.xlsx"
-                )
-                if not file_path:
-                    return
-
-                try:
-                    import pandas as pd
-                    from datetime import datetime
-
-                    timestamp = datetime.now().strftime("%H:%M:%S")
-                    dates = datetime.now().strftime("%d-%m-%y")
-                    data = {
-                        "Time": [timestamp],
-                        "Date": [dates],
-                        "Serial": [self.last_device_info.get("Serial No", "N/A")],
-                        "Brand": [self.last_device_info.get("Brand", "N/A")],
-                        "Model": [self.last_device_info.get("Model", "N/A")],
-                        "Android Version": [self.last_device_info.get("Android Version", "N/A")],
-                        "Battery": [self.last_device_info.get("Battery", "N/A")],
-                        "WiFi MAC": [self.last_device_info.get("WiFi MAC", "N/A")],
-                        "BT MAC": [self.last_device_info.get("Bluetooth MAC", "N/A")],
-                        "Base Version": [self.last_device_info.get("Base Version", "N/A")],
-                        "RF Cal": [self.last_device_info.get("RF Cal", "N/A")],
-                        "HW Rev": [self.last_device_info.get("HW Rev", "N/A")],
-                    }
-
-                    try:
-                        existing_df = pd.read_excel(file_path, engine='openpyxl')
-                        new_df = pd.DataFrame(data)
-                        combined_df = pd.concat([existing_df, new_df], ignore_index=True)
-                        combined_df.to_excel(file_path, index=False, engine='openpyxl')
-                        messagebox.showinfo("Success", f"Appended to {file_path}")
-                    except FileNotFoundError:
-                        pd.DataFrame(data).to_excel(file_path, index=False, engine='openpyxl')
-                        messagebox.showinfo("Success", f"Created {file_path}")
-                    except Exception as e:
-                        messagebox.showerror("Excel Error", f"Failed to update Excel file: {str(e)}")
-                except ImportError:
-                    messagebox.showerror("Error", "Required library (pandas/openpyxl) not available")
-                except Exception as e:
-                    messagebox.showerror("Data Error", f"Failed to prepare data: {str(e)}")
-            except Exception as e:
-                messagebox.showerror("File Error", f"File dialog failed: {str(e)}")
-        except Exception as e:
-            messagebox.showerror("Unexpected Error", f"Export failed: {str(e)}")
-        finally:
-            self._set_ui_busy(False)
-
-    def __init__(self):
-        super().__init__()
-        self.title("Integrated OQC Tool")
-        self.geometry("1420x680")
-        self.resizable(True, True)
-        self.configure(fg_color=BG)
-        try:
-            self.iconbitmap('icon_1.ico')
-        except Exception:
-            pass
-        self.binary_status = None
-        self.ui_status = None
-        self.eid_status = None
-        self._entries = {}
-        self._fetched_lbls = {}
-        self._fail_lbls = {}
-        self._pass_lbls = {}
-        self.last_device_info = {}
-        self.file_path = ctk.StringVar()
-        self.ui_file_path = ctk.StringVar()
-        self._build_ui()
-        self.check_device_connection()
-
-    def start_new_verification_round(self):
-        self.binary_status = None
-        self.ui_status = None
-        self.eid_status = None
-        self.final_result_label.configure(text="Pending...", text_color="#333333")
-
-    def update_final_result(self):
-        statuses = {
-            "Binary": self.binary_status,
-            "UI": self.ui_status,
-            "EID": self.eid_status
-        }
-        total_tests = len(statuses)
-        completed_tests = sum(1 for status in statuses.values() if status is not None)
-        passed_tests = sum(1 for status in statuses.values() if status is True)
-
-        if completed_tests == total_tests:
-            if passed_tests == total_tests:
-                self.final_result_label.configure(text="PASS", text_color="#1A7A1A")
-            else:
-                self.final_result_label.configure(text="FAIL", text_color="#BB0000")
-        elif completed_tests > 0:
-            self.final_result_label.configure(
-                text=f"Pending... ({completed_tests}/{total_tests} tests complete)",
-                text_color="#333333"
-            )
-        else:
-            self.final_result_label.configure(text="Pending...", text_color="#333333")
-
-    def _on_tree_click(self, event):
-        try:
-            region = self._tree.identify("region", event.x, event.y)
-            if region == "cell":
-                column = self._tree.identify_column(event.x)
-                item = self._tree.identify_row(event.y)
-                if item and column == "#3":
-                    values = self._tree.item(item, "values")
-                    if values and len(values) >= 2:
-                        self.copy_to_clipboard(values[1])
-        except Exception:
-            pass
-
-    def _build_ui(self):
-        main_container = ctk.CTkFrame(self, fg_color="transparent")
-        main_container.pack(fill="both", expand=True, padx=10, pady=10)
-
-        left_frame = ctk.CTkFrame(main_container, fg_color=CONT, corner_radius=10)
-        left_frame.pack(side="left", fill="both", expand=True, padx=5, pady=5)
-
-        ctk.CTkLabel(
-            left_frame, text="Verification Tool SIEL-P(N)",
-            font=ctk.CTkFont("Segoe UI", 22, "bold"),
-            text_color="black", fg_color="transparent"
-        ).pack(pady=(10, 5))
-
-        self.device_status_label = ctk.CTkLabel(
-            left_frame, text="Device Status: Checking...",
-            font=ctk.CTkFont("Segoe UI", 14),
-            text_color="black", fg_color="transparent"
-        )
-        self.device_status_label.pack(pady=(5, 15))
-
-        input_frame = ctk.CTkFrame(left_frame, fg_color="transparent")
-        input_frame.pack(fill="x", padx=20, pady=(0, 10))
-
-        for label_text, key, _ in self.FIELDS:
-            self._build_row(input_frame, label_text, key)
-
-        button_frame = ctk.CTkFrame(left_frame, fg_color="transparent")
-        button_frame.pack(pady=(10, 15))
-
-        self._btn_fetch = ctk.CTkButton(
-            button_frame, text="Compare",
-            font=ctk.CTkFont("Segoe UI", 14),
-            fg_color=BTN_GREEN, hover_color=BTN_GREEN_HV,
-            text_color="white", width=80, corner_radius=8,
-            command=self._on_fetch
-        )
-        self._btn_fetch.pack(side="left", padx=10)
-
-        self._btn_clear = ctk.CTkButton(
-            button_frame, text="Clear",
-            font=ctk.CTkFont("Segoe UI", 14),
-            fg_color='#A80F0F', hover_color='#6B1313',
-            text_color="white", border_color="black", border_width=2,
-            width=80, corner_radius=8, command=self._clear
-        )
-        self._btn_clear.pack(side="left", padx=10)
-
-        self._result_lbl = ctk.CTkLabel(
-            left_frame, text="PASS/FAIL",
-            font=ctk.CTkFont("Segoe UI", 24, "bold"),
-            text_color="black", fg_color="transparent"
-        )
-        self._result_lbl.pack(pady=(10, 5))
-
-        table_container = ctk.CTkFrame(left_frame, fg_color=TABLE_BG, corner_radius=8)
-        table_container.pack(padx=15, fill="both", expand=True, pady=(5, 10))
-
-        style = ttk.Style()
-        style.theme_use("clam")
-        style.configure(
-            "Vt.Treeview", background=TABLE_BG, fieldbackground=TABLE_BG,
-            foreground="#0F0F0F", rowheight=20, font=("Segoe UI", 13), borderwidth=0,
-        )
-        style.configure(
-            "Vt.Treeview.Heading", background="#BEBEBE", foreground="#1a1a1a",
-            font=("Segoe UI", 14, "bold"), relief="flat",
-        )
-        style.map("Vt.Treeview", background=[("selected", "#A8C8E8")])
-
-        self._tree = ttk.Treeview(
-            table_container, columns=("Key", "Value", "Copy"),
-            show="headings", height=12, style="Vt.Treeview",
-        )
-        self._tree.heading("Key", text="Property")
-        self._tree.heading("Value", text="Value")
-        self._tree.heading("Copy", text="Copy")
-        self._tree.column("Key", width=140, anchor="w")
-        self._tree.column("Value", width=140, anchor="w")
-        self._tree.column("Copy", width=80, anchor="center")
-        self._tree.pack(fill="both", expand=True, padx=2, pady=2)
-        self._tree.bind("<Button-1>", self._on_tree_click)
-
-        self.info_button = ctk.CTkButton(
-            left_frame, text="Get Device Info", font=ctk.CTkFont("Segoe UI", 18),
-            fg_color=BTN_WHITE, hover_color=BTN_WHITE_HV, text_color="black",
-            border_color="#000000", border_width=2, width=180, height=40,
-            corner_radius=8, command=self._on_get_info
-        )
-        self.info_button.pack(pady=(10, 15))
-
-        right_frame = ctk.CTkFrame(main_container, fg_color="transparent")
-        right_frame.pack(side="right", fill="both", expand=True, padx=5, pady=5)
-
-        binary_frame = ctk.CTkFrame(right_frame, fg_color=CONT, corner_radius=10)
-        binary_frame.pack(fill="both", expand=True, padx=0, pady=(0,3))
-        
-        ctk.CTkLabel(
-            binary_frame, text="Binary Comparison",
-            font=ctk.CTkFont("Segoe UI", 22, "bold"), text_color="black"
-        ).pack(pady=(10, 5))
-
-        file_frame = ctk.CTkFrame(binary_frame, fg_color="transparent")
-        file_frame.pack(fill="x", padx=15, pady=10)
-
-        ctk.CTkLabel(file_frame, text="Excel File:", font=ctk.CTkFont("Segoe UI", 14)).pack(side="left")
-        ctk.CTkEntry(file_frame, textvariable=self.file_path, width=280, font=ctk.CTkFont("Segoe UI", 14)).pack(side="left", padx=10)
-        ctk.CTkButton(
-            file_frame, text="Browse", font=ctk.CTkFont("Segoe UI", 14),
-            fg_color=BTN_EXP, hover_color= BTN_EXP_HOV, width=80, command=self._browse_file
-        ).pack(side="left", padx=10)
-
-        self.bin_comp=ctk.CTkButton(
-            file_frame, text="Compare", font=ctk.CTkFont("Segoe UI", 14),
-            fg_color=BTN_GREEN, hover_color=BTN_GREEN_HV, text_color="white",
-            width=80, command=self.start_binary_verification
-        )
-        self.bin_comp.pack(side="left")
-        
-        binary_file_frame = ctk.CTkFrame(file_frame,fg_color='transparent')
-        binary_file_frame.pack(pady=10)
-        
-        self.binary_result_label = ctk.CTkLabel(
-            binary_file_frame, text="PASS/FAIL",
-            font=ctk.CTkFont("Segoe UI", 24, "bold"), text_color="black"
-        )
-        self.binary_result_label.pack(side='left', padx=10)
-
-        table_container_binary = ctk.CTkFrame(binary_frame, fg_color=TABLE_BG, corner_radius=8)
-        table_container_binary.pack(fill="both", expand=True, padx=15, pady=(0, 15))
-
-        self.comp_tree = ttk.Treeview(
-            table_container_binary, columns=("Property", "Device", "Excel", "Match"),
-            show="headings", height=10, style="Vt.Treeview",
-        )
-        self.comp_tree.heading("Property", text="Property")
-        self.comp_tree.heading("Device", text="Extracted")
-        self.comp_tree.heading("Excel", text="PLM Value")
-        self.comp_tree.heading("Match", text="Match")
-        self.comp_tree.column("Property", width=60, anchor="w")
-        self.comp_tree.column("Device", width=80, anchor="w")
-        self.comp_tree.column("Excel", width=80, anchor="w")
-        self.comp_tree.column("Match", width=60, anchor="center")
-        self.comp_tree.pack(fill="both", expand=True)
-
-        ui_frame = ctk.CTkFrame(right_frame, fg_color=CONT, corner_radius=10)
-        ui_frame.pack(fill="both", expand=True, padx=0, pady=(3,0))
-
-        ctk.CTkLabel(
-            ui_frame, text="UI Verification",
-            font=ctk.CTkFont("Segoe UI", 22, "bold"), text_color="black"
-        ).pack(pady=(10, 5))
-
-        ui_file_frame = ctk.CTkFrame(ui_frame, fg_color="transparent")
-        ui_file_frame.pack(fill="x", padx=15, pady=10)
-
-        ctk.CTkLabel(ui_file_frame, text="Excel File:", font=ctk.CTkFont("Segoe UI", 14)).pack(side="left")
-        ui_entry = ctk.CTkEntry(ui_file_frame, textvariable=self.ui_file_path, width=280, font=ctk.CTkFont("Segoe UI", 14))
-        ui_entry.pack(side="left", padx=10)
-        ctk.CTkButton(
-            ui_file_frame, text="Browse", font=ctk.CTkFont("Segoe UI", 14),
-            fg_color=BTN_EXP, hover_color=BTN_EXP_HOV, width=80, command=self._browse_ui_file
-        ).pack(side="left", padx=10)
-
-        self.ui_comp = ctk.CTkButton(
-            ui_file_frame, text="Compare", font=ctk.CTkFont("Segoe UI", 14),
-            fg_color=BTN_GREEN, hover_color=BTN_GREEN_HV, text_color="white",
-            width=80, command=self.start_ui_verification
-        )
-        self.ui_comp.pack(side ='left')
-        
-        ui_file_frame2 = ctk.CTkFrame(ui_file_frame,fg_color='transparent')
-        ui_file_frame2.pack(pady=10)
-        
-        self.ui_result_frame = ctk.CTkLabel(
-            ui_file_frame2, text="PASS/FAIL",
-            font=ctk.CTkFont("Segoe UI", 24, "bold"), text_color="black"
-        )
-        self.ui_result_frame.pack(side='left', padx=10)
-
-        results_frame = ctk.CTkFrame(ui_frame, fg_color=TABLE_BG, corner_radius=8, border_color='black', border_width=1)
-        results_frame.pack(fill="both", expand=True, padx=15, pady=(0, 15))
-
-        self.result_listbox = tk.Listbox(
-            results_frame, bg=TABLE_BG, fg="#0F0F0F",
-            font=("Segoe UI", 12), bd=0, height=10, highlightthickness=0
-        )
-        self.result_listbox.pack(fill="both", expand=True, padx=5, pady=5)
-
-        final_frame = ctk.CTkFrame(self, fg_color="#F0F0F0", corner_radius=10)
-        final_frame.pack(fill="x", padx=10, pady=(0, 10))
-
-        ctk.CTkLabel(
-            final_frame, text="Final Verification Result:",
-            font=ctk.CTkFont("Segoe UI", 20, "bold"), text_color="black"
-        ).pack(side="left", padx=20, pady=10)
-
-        self.final_result_label = ctk.CTkLabel(
-            final_frame, text="Pending...",
-            font=ctk.CTkFont("Segoe UI", 20, "bold"), text_color="#333333"
-        )
-        self.final_result_label.pack(side="left", padx=10, pady=10)
-
-        self._btn_export = ctk.CTkButton(
-            final_frame, text="Export Info to Excel",
-            font=ctk.CTkFont("Segoe UI", 16),
-            fg_color=BTN_EXP, hover_color=BTN_EXP_HOV, text_color="white",
-            width=180, height=40, corner_radius=8, command=self._on_export
-        )
-        self._btn_export.pack(side="right", padx=20, pady=10)
-
-    def check_device_connection(self):
-        try:
-            model = run_adb("shell", "getprop", "ro.product.model")
-            if model != "Not Found" and "Error" not in model:
-                self.device_status_label.configure(
-                    text=f"Device Connected: {model}", text_color="#1A7A1A"
-                )
-            else:
-                self.device_status_label.configure(
-                    text="Device Not Connected", text_color="#BB0000"
-                )
-        except Exception:
-            self.device_status_label.configure(text="Device Not Connected", text_color="#BB0000")
-        finally:
-            self.after(2000, self.check_device_connection)
-
-    def _browse_ui_file(self):
-        file_path = filedialog.askopenfilename(
-            title="Select Excel file with UI reference images",
-            filetypes=[("Excel files", "*.xlsx")]
-        )
-        if file_path:
-            self.ui_file_path.set(file_path)
-
-    def start_binary_verification(self):
-        self._set_ui_busy(True)
-        self.binary_result_label.configure(text="Loading...", text_color="black")
-        threading.Thread(target=self._compare_versions, daemon=True).start()
-
-    def start_ui_verification(self):
-        self._set_ui_busy(True)
-        self.ui_result_frame.configure(text="Loading...", text_color="black")
-        threading.Thread(target=self.compare_ui_images, daemon=True).start()
-
-    def extract_ui_images_from_excel(self, excel_file):
-        try:
-            from openpyxl import load_workbook
-            os.makedirs("ref_img", exist_ok=True)
-            for f in glob("ref_img/*.png"):
-                try: os.remove(f)
-                except Exception: pass
-
-            workbook = load_workbook(excel_file)
-            sheet = workbook.active
-            images_info = []
-
-            for img in sheet._images:
-                if hasattr(img, 'anchor') and hasattr(img.anchor, '_from'):
-                    cell = img.anchor._from
-                    images_info.append((cell.row, cell.col, img))
-
-            images_info.sort(key=lambda x: (x[0], x[1]))
-            extracted_images = []
-            
-            for idx, (row, col, img) in enumerate(images_info):
-                image_path = os.path.join("ref_img", f"extracted_image_{idx + 1}.png")
-                with open(image_path, "wb") as img_file:
-                    img_file.write(img._data())
-                extracted_images.append(image_path)
-            return extracted_images
-
-        except zipfile.BadZipFile:
-            messagebox.showerror("File Error", "File is not a valid zip archive (not a true .xlsx).")
-            return []
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to extract images: {str(e)}")
-            return []
-
-    def compare_ui_images(self):
-        excel_file = self.ui_file_path.get()
-        if not excel_file:
-            self.after(0, lambda: messagebox.showerror("Error", "Please select an Excel file for UI verification"))
-            self.after(0, lambda: self._set_ui_busy(False))
-            return
-
-        try:
-            import cv2
-            ref_images = self.extract_ui_images_from_excel(excel_file)
-            if len(ref_images) < 4:
-                self.after(0, lambda: messagebox.showerror("Error", f"Extracted only {len(ref_images)} images, need 4"))
-                self.after(0, lambda: self._set_ui_busy(False))
-                return
-
-            if not self.capture_device_images():
-                self.after(0, lambda: self._set_ui_busy(False))
-                return
-
-            target_images = sorted(glob(os.path.join(os.path.dirname(os.path.abspath(__file__)),'target_img/*.*')))
-            if len(target_images) < 4:
-                self.after(0, lambda: messagebox.showerror("Error", f"Captured only {len(target_images)} screenshots"))
-                self.after(0, lambda: self._set_ui_busy(False))
-                return
-
-            device_model = run_adb("shell", "getprop", "ro.product.model")
-            if device_model == "Not Found": device_model = "UnknownDevice"
-            os.makedirs(device_model, exist_ok=True)
-
-            self.comparison_images = []
-            results = []
-            all_pass = True
-
-            for i in range(min(4, len(ref_images), len(target_images))):
-                try:
-                    ref_img = cv2.imread(ref_images[i])
-                    target_img = cv2.imread(target_images[i])
-                    if ref_img is None or target_img is None:
-                        raise ValueError("Failed to load image via cv2")
-
-                    result_img, missing_apps, misplaced_apps = self.compare_launcher_ui(ref_img, target_img)
-                    output_path = os.path.join(device_model, f"comparison_result_{i + 1}.png")
-                    cv2.imwrite(output_path, result_img)
-                    self.comparison_images.append(output_path) 
-
-                    if missing_apps or misplaced_apps:
-                        results.append(f"Image {i + 1}: FAIL - Missing: {len(missing_apps)}, Misplaced: {len(misplaced_apps)}")
-                        all_pass = False
-                    else:
-                        results.append(f"Image {i + 1}: PASS")
-                except Exception as e:
-                    results.append(f"Image {i + 1}: Error - {str(e)}")
-                    all_pass = False
-
-            results.append("<<CLICK TO SHOW IMAGES>>")
-
-            # Thread-safe UI update
-            self.after(0, lambda: self._update_ui_results_gui(results, all_pass))
-
-        except ImportError:
-            self.after(0, lambda: messagebox.showerror("Error", "Required library (cv2) not available"))
-            self.after(0, lambda: self._set_ui_busy(False))
-        except Exception as e:
-            self.after(0, lambda: messagebox.showerror("Error", f"UI comparison failed: {str(e)}"))
-            self.after(0, lambda: self._set_ui_busy(False))
-
-    def _update_ui_results_gui(self, results, all_pass):
-        self.result_listbox.delete(0, tk.END)
-        for result in results:
-            self.result_listbox.insert(tk.END, result)
-
-        if all_pass:
-            self.ui_status = True
-            self.ui_result_frame.configure(text="PASS", text_color="#4CF21B")
-        else:
-            self.ui_status = False
-            self.ui_result_frame.configure(text="FAIL", text_color="#D41111")
-
-        self.update_final_result()
-        self.result_listbox.bind('<<ListboxSelect>>', self.on_listbox_select)
-        self._set_ui_busy(False)
-
-    def compare_launcher_ui(self, ref, target, similarity_thresh=0.70, position_tol=80):
-        try:
-            import cv2
-            if ref is None or target is None:
-                raise ValueError("Image not loaded")
-
-            ref_h, ref_w = ref.shape[:2]
-            tgt_h, tgt_w = target.shape[:2]
-            scale_x = tgt_w / ref_w
-            scale_y = tgt_h / ref_h
-
-            result_img = target.copy()
-            gray_ref = cv2.cvtColor(ref, cv2.COLOR_BGR2GRAY)
-            thresh = cv2.adaptiveThreshold(gray_ref, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 11, 2)
-            contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-            icon_boxes = []
-            for cnt in contours:
-                x, y, w, h = cv2.boundingRect(cnt)
-                if h == 0: continue
-                ratio = w / float(h)
-                if (0.7 < ratio < 1.3 and 20 < w < 120 and 20 < h < 120):
-                    icon_boxes.append((x, y, w, h))
-
-            icon_boxes = sorted(icon_boxes, key=lambda b: (b[1], b[0]))
-            orb = cv2.SIFT_create(nfeatures=3000)
-
-            missing_apps = []
-            misplaced_apps = []
-
-            for idx, (x, y, w, h) in enumerate(icon_boxes):
-                ref_icon = ref[y:y + h, x:x + w]
-                kp1, des1 = orb.detectAndCompute(ref_icon, None)
-                if des1 is None: continue
-
-                expected_x = int(x * scale_x)
-                expected_y = int(y * scale_y)
-                search_margin = 150
-                sx1 = max(0, expected_x - search_margin)
-                sy1 = max(0, expected_y - search_margin)
-                sx2 = min(tgt_w, expected_x + int(w * scale_x) + search_margin)
-                sy2 = min(tgt_h, expected_y + int(h * scale_y) + search_margin)
-
-                search_roi = target[sy1:sy2, sx1:sx2]
-                if search_roi.size == 0: continue
-
-                ref_resized = cv2.resize(ref_icon, (max(10, int(w * scale_x)), max(10, int(h * scale_y))))
-                match = cv2.matchTemplate(search_roi, ref_resized, cv2.TM_CCOEFF_NORMED)
-                _, max_val, _, max_loc = cv2.minMaxLoc(match)
-
-                if max_val < similarity_thresh:
-                    missing_apps.append({"icon_id": idx, "expected": (expected_x, expected_y)})
-                    cv2.rectangle(result_img, (expected_x, expected_y), (expected_x + int(w * scale_x), expected_y + int(h * scale_y)), (0, 0, 255), 3)
-                    cv2.putText(result_img, "MISSING", (expected_x, expected_y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-                    continue
-
-                found_x = sx1 + max_loc[0]
-                found_y = sy1 + max_loc[1]
-                if abs(found_x - expected_x) > position_tol or abs(found_y - expected_y) > position_tol:
-                    misplaced_apps.append({"icon_id": idx, "expected": (expected_x, expected_y), "found": (found_x, found_y)})
-                    cv2.rectangle(result_img, (found_x, found_y), (found_x + ref_resized.shape[1], found_y + ref_resized.shape[0]), (0, 165, 255), 3)
-                    cv2.line(result_img, (expected_x, expected_y), (found_x, found_y), (0, 165, 255), 2)
-                    cv2.putText(result_img, "MISPLACED", (found_x, found_y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
-
-            return result_img, missing_apps, misplaced_apps
-
-        except Exception as e:
-            print(f"Error in compare_launcher_ui: {str(e)}")
-            return target.copy() if target is not None else None, [], []
-
-    def on_listbox_select(self, event):
-        if not self.result_listbox.curselection(): return
-        selected_index = self.result_listbox.curselection()[0]
-        if self.result_listbox.get(selected_index) == "<<CLICK TO SHOW IMAGES>>":
-            self.show_comparison_images()
-
-    def show_comparison_images(self):
-        if not hasattr(self, 'comparison_images') or not self.comparison_images:
-            messagebox.showinfo("Info", "No comparison images available")
-            return
-        
-        try:
-            import cv2
-            for image_path in self.comparison_images:
-                if os.path.exists(image_path):
-                    img = cv2.imread(image_path)
-                    if img is not None:
-                        height, width = img.shape[:2]
-                        max_height = 800
-                        if height > max_height:
-                            scale = max_height / height
-                            img = cv2.resize(img, (int(width * scale), max_height))
-                        window_name = os.path.basename(image_path)
-                        cv2.imshow(window_name, img)
-                        index = self.comparison_images.index(image_path)
-                        cv2.moveWindow(window_name, 100 + (index % 2) * 600, 100 + (index // 2) * 500)
-            cv2.waitKey(0)
-            cv2.destroyAllWindows()
-        except ImportError:
-            messagebox.showerror("Error", "Required library (cv2) not available to show images")
-
-    def capture_device_images(self):
-        try:
-            import cv2
-            os.makedirs("target_img", exist_ok=True)
-            for f in glob("target_img/*.png"):
-                try: os.remove(f)
-                except Exception: pass
-
-            run_adb("shell", "input", "tap", "600", "2250")
-            run_adb("shell", "input", "tap", "600", "2250")
-            run_adb("shell", "screencap", "/sdcard/target1.png")
-            time.sleep(0.3)
-            run_adb("shell", "input", "swipe", "900", "700", "300", "700")
-            time.sleep(0.2)
-            run_adb("shell", "screencap", "/sdcard/target2.png")
-            time.sleep(0.2)
-            run_adb("shell", "input", "swipe", "500", "1500", "500", "500")
-            time.sleep(0.1)
-            run_adb("shell", "input", "swipe", "300", "700", "900", "700")
-            run_adb("shell", "screencap", "/sdcard/target3.png")
-            time.sleep(0.2)
-            run_adb("shell", "input", "swipe", "900", "700", "300", "700")
-            run_adb("shell", "screencap", "/sdcard/target4.png")
-
-            run_adb("pull", "/sdcard/target1.png", "target_img")
-            run_adb("pull", "/sdcard/target2.png", "target_img")
-            run_adb("pull", "/sdcard/target3.png", "target_img")
-            run_adb("pull", "/sdcard/target4.png", "target_img")
-
-            for target_path in glob('target_img/*.png'):
-                img = cv2.imread(target_path)
-                if img is not None:
-                    cv2.imwrite(target_path, img)
-            return True
-        except ImportError:
-            self.after(0, lambda: messagebox.showerror("Error", "Required library (cv2) not available"))
-            return False
-        except Exception as e:
-            self.after(0, lambda: messagebox.showerror("Error", f"Failed to capture screenshots: {str(e)}"))
-            return False
-
-    def _browse_file(self):
-        file_path = filedialog.askopenfilename(filetypes=[("Excel files", "*.xlsx")])
-        if file_path:
-            self.file_path.set(file_path)
-
-    def _compare_versions(self):
-        if not self.file_path.get():
-            self.after(0, lambda: messagebox.showerror("Error", "Please select an Excel file"))
-            self.after(0, lambda: self.binary_result_label.configure(text="PASS/FAIL", text_color="black"))
-            self.after(0, lambda: self._set_ui_busy(False))
-            return
-
-        try:
-            import openpyxl
-            if len(arr) > 5:
-                model = arr[5]
-                customer = arr[2][5:8] if len(arr[2]) >= 8 else ""
-                csc = arr[2]
-            else:
-                model = customer = csc = ""
-
-            if not model:
-                self.after(0, lambda: messagebox.showerror("Error", "Could not fetch Model from device."))
-                self.after(0, lambda: self.binary_result_label.configure(text="PASS/FAIL", text_color="black"))
-                self.after(0, lambda: self._set_ui_busy(False))
-                return
-
-            wb = openpyxl.load_workbook(self.file_path.get(), data_only=True)
-            sheet = wb.active
-            headers = [cell.value for cell in sheet[4]] 
-            required_columns = ['Model Name', 'AP(Code) ver.', 'CP(BB) ver.', 'CSC ver.', 'Customer']
-            
-            if not all(col in headers for col in required_columns):
-                missing = [col for col in required_columns if col not in headers]
-                self.after(0, lambda: messagebox.showerror("Invalid Format", f"Missing columns: {', '.join(missing)}"))
-                self.after(0, lambda: self.binary_result_label.configure(text="PASS/FAIL", text_color="black"))
-                self.after(0, lambda: self._set_ui_busy(False))
-                return
-
-            col_index = {col: headers.index(col) for col in required_columns}
-            matching_row = None
-
-            for row in sheet.iter_rows(min_row=5, values_only=True):
-                try:
-                    row_data = {col: row[col_index[col]] for col in required_columns}
-                    model_name = str(row_data['Model Name'])[:8].upper() if row_data['Model Name'] else ""
-                    row_customer = str(row_data['Customer']).upper() if row_data['Customer'] else ""
-                    row_csc = str(row_data['CSC ver.']).upper() if row_data['CSC ver.'] else ""
-
-                    if (model_name == model.upper() and row_customer == customer.upper() and row_csc == csc.upper()):
-                        matching_row = row_data
-                        break
-                except Exception:
-                    continue
-
-            if not matching_row:
-                self.after(0, lambda: messagebox.showwarning("Not Found", f"Model '{model}' with customer '{customer}' and CSC '{csc}' not found in Excel file."))
-                self.after(0, lambda: self.binary_result_label.configure(text="PASS/FAIL", text_color="black"))
-                self.after(0, lambda: self._set_ui_busy(False))
-                return
-
-            # Thread-safe UI update
-            self.after(0, lambda: self._update_binary_results_gui(matching_row))
-
-        except zipfile.BadZipFile:
-            self.after(0, lambda: messagebox.showerror("File Error", "File is not a valid zip archive (not a true .xlsx)."))
-            self.after(0, lambda: self.binary_result_label.configure(text="PASS/FAIL", text_color="black"))
-            self.after(0, lambda: self._set_ui_busy(False))
-        except ImportError:
-            self.after(0, lambda: messagebox.showerror("Error", "Required library (openpyxl) not available"))
-            self.after(0, lambda: self._set_ui_busy(False))
-        except Exception as e:
-            self.after(0, lambda: messagebox.showerror("Error", f"Comparison failed: {str(e)}"))
-            self.after(0, lambda: self.binary_result_label.configure(text="PASS/FAIL", text_color="black"))
-            self.after(0, lambda: self._set_ui_busy(False))
-
-    def _update_binary_results_gui(self, matching_row):
-        for item in self.comp_tree.get_children():
-            self.comp_tree.delete(item)
-
-        fields = [
-            ("AP", arr[0] if len(arr)>0 else "N/A", "AP(Code) ver."),
-            ("CP", arr[1] if len(arr)>1 else "N/A", "CP(BB) ver."),
-            ("CSC", arr[2] if len(arr)>2 else "N/A", "CSC ver.")
-        ]
-
-        all_match = True
-        for prop, device_val, excel_key in fields:
-            excel_val = str(matching_row[excel_key]).strip().upper() if matching_row[excel_key] else ""
-            device_val = device_val.strip().upper() if device_val else ""
-            match = "✅" if device_val == excel_val else "❌"
-            self.comp_tree.insert("", "end", values=(prop, device_val, excel_val, match))
-            if device_val != excel_val:
-                all_match = False
-
-        if all_match:
-            self.comp_tree.insert("", "end", values=("FINAL RESULT", "", "", "ALL VALUES MATCH ✅"))
-            self.binary_status = True
-            self.binary_result_label.configure(text="PASS", text_color='#4CF21B')
-        else:
-            self.comp_tree.insert("", "end", values=("FINAL RESULT", "", "", "SOME VALUES DON'T MATCH ❌"))
-            self.binary_status = False
-            self.binary_result_label.configure(text="FAIL", text_color="#D41111")
-        
-        self.update_final_result()
-        self._set_ui_busy(False)
-
-    def _validate_entry_length(self, event, expected_length, current_key):
-        entry = event.widget
-        text = entry.get().strip()
-        if len(text) > expected_length:
-            entry.delete(expected_length, tk.END)
-            return
-        if len(text) == expected_length:
-            current_index = list(self._entries.keys()).index(current_key)
-            next_index = current_index + 1
-            if next_index < len(self._entries):
-                next_key = list(self._entries.keys())[next_index]
-                self._entries[next_key].focus_set()
-
-    def _build_row(self, parent: ctk.CTkFrame, label_text: str, key: str):
-        row = ctk.CTkFrame(parent, fg_color="transparent")
-        row.pack(fill="x", pady=6)
-
-        ctk.CTkLabel(
-            row, text=label_text, font=ctk.CTkFont("Segoe UI", 12),
-            text_color="#111111", fg_color="transparent", width=120, anchor="w"
-        ).pack(side="left")
-
-        entry = ctk.CTkEntry(
-            row, width=200, fg_color=ENTRY_BG, border_color="#BBBBBB",
-            text_color="#111111", height=36, corner_radius=8
-        )
-        entry.pack(side="left", padx=(0, 18))
-        self._entries[key] = entry
-
-        if key in ['eid', 'imei', 'sn']:
-            expected_length = 32 if key == 'eid' else (15 if key == 'imei' else 11)
-            entry.bind("<KeyRelease>", lambda event, exp_len=expected_length, curr_key=key:
-                       self._validate_entry_length(event, exp_len, curr_key))
-
-        fetched_lbl = ctk.CTkLabel(
-            row, text="— — —", font=ctk.CTkFont("Segoe UI", 10),
-            text_color="#4a4a4a", fg_color="transparent", width=130, anchor="w"
-        )
-        fetched_lbl.pack(side="left",expand=False)
-        self._fetched_lbls[key] = fetched_lbl
-
-        icons = ctk.CTkFrame(row, fg_color="transparent")
-        icons.pack(side="right", padx=6)
-
-        fail_lbl = ctk.CTkLabel(
-            icons, text="✗", font=ctk.CTkFont("Segoe UI", 20, "bold"),
-            text_color="#888888", fg_color="transparent", width=26
-        )
-        fail_lbl.pack(side="left", padx=2)
-        self._fail_lbls[key] = fail_lbl
-
-        pass_lbl = ctk.CTkLabel(
-            icons, text="✓", font=ctk.CTkFont("Segoe UI", 20, "bold"),
-            text_color="#888888", fg_color="transparent", width=26
-        )
-        pass_lbl.pack(side="left", padx=2)
-        self._pass_lbls[key] = pass_lbl
-
-    def _set_status(self, key: str, state: str):
-        if state == "pass":
-            self._fail_lbls[key].configure(text_color="#AAAAAA")
-            self._pass_lbls[key].configure(text_color="#42EE42")
-        elif state == "fail":
-            self._fail_lbls[key].configure(text_color="#CC2222")
-            self._pass_lbls[key].configure(text_color="#AAAAAA")
-        else:
-            self._fail_lbls[key].configure(text_color="#888888")
-            self._pass_lbls[key].configure(text_color="#888888")
-
-    def _set_ui_busy(self, busy: bool):
-        state = "disabled" if busy else "normal"
-        buttons = [self._btn_fetch, self._btn_clear, self.info_button, self.bin_comp, self.ui_comp]
-        if hasattr(self, '_btn_export'):
-            buttons.append(self._btn_export)
-        for btn in buttons:
-            if hasattr(btn, 'configure'):
-                btn.configure(state=state)
-
-    def _on_fetch(self):
-        inputs = {key: self._entries[key].get().strip() for key, *_ in [(k,) for _, k, _ in self.FIELDS]}
-
-        if inputs['eid'] and len(inputs['eid']) != 32:
-            messagebox.showerror("Invalid EID", "EID must be 32 characters long")
-            return
-        if inputs['sn'] and len(inputs['sn']) != 11:
-            messagebox.showerror("Invalid S/N", "S/N must be 11 characters long")
-            return
-        if inputs['imei'] and len(inputs['imei']) != 15:
-            messagebox.showerror("Invalid IMEI", "IMEI must be 15 characters long")
-            return
-        if not any(inputs.values()):
-            messagebox.showwarning("Input Required", "Enter at least one value to compare.")
-            return
-
-        self._result_lbl.configure(text="Fetching…", text_color="#333333")
-        self._set_ui_busy(True)
-
-        def worker():
-            verdicts: list[bool] = []
-            for _, key, fn in self.FIELDS:
-                scanned = self._entries[key].get().strip()
-                if not scanned:
-                    self.after(0, lambda k=key: (
-                        self._fetched_lbls[k].configure(text="— — —"),
-                        self._set_status(k, "idle")
-                    ))
-                    continue
-
-                fetched = fn()
-                match = (scanned == fetched) and fetched != "Not Found"
-                verdicts.append(match)
-
-                status = "pass" if match else "fail"
-                self.after(0, lambda k=key, v=fetched, s=status: (
-                    self._fetched_lbls[k].configure(text=v),
-                    self._set_status(k, s),
-                ))
-
-            self.after(0, lambda: self._finish_compare(verdicts))
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _finish_compare(self, verdicts: list[bool]):
-        if not verdicts:
-            self._result_lbl.configure(text="PASS/FAIL", text_color="black")
-        elif all(verdicts):
-            self.eid_status=True
-            self.update_final_result()
-            self._result_lbl.configure(text="✅  PASS", text_color="#1A7A1A")
-        else:
-            self.eid_status=False
-            self.update_final_result()
-            self._result_lbl.configure(text="❌  FAIL", text_color="#BB0000")
-        self._set_ui_busy(False)
-
-    def _clear(self):
-        self.binary_status = None
-        self.ui_status = None
-        self.eid_status = None
-
-        if hasattr(self, 'binary_result_label'):
-            self.binary_result_label.configure(text="PASS/FAIL", text_color="black")
-        if hasattr(self, 'ui_result_frame'):
-            self.ui_result_frame.configure(text="PASS/FAIL", text_color="black")
-        if hasattr(self, 'eid_result_label'):
-            self.eid_result_label.configure(text="PASS/FAIL", text_color="black")
-
-        if hasattr(self, 'final_result_label'):
-            self.final_result_label.configure(text="Pending...", text_color="#333333")
-            
-        for entry in self._entries.values():
-            entry.delete(0, tk.END)
-
-        for _, key, _ in self.FIELDS:
-            self._fetched_lbls[key].configure(text="— — —")
-            self._set_status(key, "idle")
-
-        self._result_lbl.configure(text="PASS/FAIL", text_color="black")
-        self._tree.delete(*self._tree.get_children())
-
-        if hasattr(self, 'comp_tree'):
-            self.comp_tree.delete(*self.comp_tree.get_children())
-        if hasattr(self, 'result_listbox'):
-            self.result_listbox.delete(0, tk.END)
-        if hasattr(self, 'final_result_label'):
-            self.final_result_label.configure(text=".... ", text_color="black")
-
-    def _on_get_info(self):
-        try:
-            serial = run_adb("get-serialno")
-            if not serial or serial == "unknown" or serial == "Not Found":
-                raise Exception("Device not connected")
-
-            self._tree.delete(*self._tree.get_children())
-            self._tree.insert("", "end", values=("Loading…", "Please wait"))
-            self._set_ui_busy(True)
-
-            def worker():
-                try:
-                    data = fetch_device_info()
-                    self.after(0, lambda: self._populate_tree(data))
-                except Exception as e:
-                    self.after(0, lambda: messagebox.showerror("Error", f"Failed to fetch device info: {str(e)}"))
-                    self.after(0, lambda: self._set_ui_busy(False))
-
-            threading.Thread(target=worker, daemon=True).start()
-
-        except Exception as e:
-            messagebox.showerror("Error", f"Device error: {str(e)}")
-            self._set_ui_busy(False)
-
-    def _populate_tree(self, data: dict):
-        self._tree.delete(*self._tree.get_children())
-        self.last_device_info = data
-        for key, value in data.items():
-            self._tree.insert("", "end", values=(key, value, "copy"))
-        self._set_ui_busy(False)
-
-if __name__ == "__main__":
-    app = App()
-    app.mainloop()
-
-
-
-
-
-
 
 
 <<<<<<<<<<<<<<<<<<
  pyinstaller --noconfirm --clean --onedir --windowed --name "Integrated_OQC_Tool" --icon "icon_1.ico" --add-binary "adb.exe;." --add-data "icon_1.ico;." --collect-all customtkinter --collect-all openpyxl --hidden-import pandas --hidden-import cv2 "aa.py"
 
 
-
-
-
-@@@@@@@@@@@@
-
 import subprocess
 import threading
 import tkinter as tk
@@ -1139,7 +26,7 @@ def resource_path(relative_path):
     except Exception:
         return relative_path
 
-ADB_PATH = resource_path(r'adb.exe')
+ADB_PATH = resource_path('adb.exe')
 
 # Colors
 BG           = "#ffffff"
@@ -1362,8 +249,10 @@ class App(ctk.CTk):
         self._fail_lbls = {}
         self._pass_lbls = {}
         self.last_device_info = {}
+        
         self.file_path = ctk.StringVar()
         self.ui_file_path = ctk.StringVar()
+        
         self._build_ui()
         self.check_device_connection()
 
@@ -1589,13 +478,25 @@ class App(ctk.CTk):
         self.ui_result_frame.pack(side='left', padx=10)
 
         results_frame = ctk.CTkFrame(ui_frame, fg_color=TABLE_BG, corner_radius=8, border_color='black', border_width=1)
-        results_frame.pack(fill="both", expand=True, padx=15, pady=(0, 15))
+        results_frame.pack(fill="both", expand=True, padx=15, pady=(0, 5))
 
         self.result_listbox = tk.Listbox(
             results_frame, bg=TABLE_BG, fg="#0F0F0F",
             font=("Segoe UI", 12), bd=0, height=10, highlightthickness=0
         )
         self.result_listbox.pack(fill="both", expand=True, padx=5, pady=5)
+
+        # New Frame and Button for "Create a UI reference"
+        ref_creation_frame = ctk.CTkFrame(ui_frame, fg_color="transparent")
+        ref_creation_frame.pack(fill="x", padx=15, pady=(0, 10))
+
+        self.btn_create_ref = ctk.CTkButton(
+            ref_creation_frame, text="Create a UI reference",
+            font=ctk.CTkFont("Segoe UI", 14),
+            fg_color=BTN_EXP, hover_color=BTN_EXP_HOV,
+            text_color="white", width=200, command=self.open_reference_window
+        )
+        self.btn_create_ref.pack(side="left")
 
         final_frame = ctk.CTkFrame(self, fg_color="#F0F0F0", corner_radius=10)
         final_frame.pack(fill="x", padx=10, pady=(0, 10))
@@ -1619,1150 +520,167 @@ class App(ctk.CTk):
         )
         self._btn_export.pack(side="right", padx=20, pady=10)
 
-    def check_device_connection(self):
-        try:
-            model = run_adb("shell", "getprop", "ro.product.model")
-            if model != "Not Found" and "Error" not in model:
-                self.device_status_label.configure(
-                    text=f"Device Connected: {model}", text_color="#1A7A1A"
-                )
-            else:
-                self.device_status_label.configure(
-                    text="Device Not Connected", text_color="#BB0000"
-                )
-        except Exception:
-            self.device_status_label.configure(text="Device Not Connected", text_color="#BB0000")
-        finally:
-            self.after(2000, self.check_device_connection)
+    # New Window and Logic Methods
+    def open_reference_window(self):
+        self.ref_window = ctk.CTkToplevel(self)
+        self.ref_window.title("Reference File creation")
+        self.ref_window.geometry("300x500")
+        self.ref_window.transient(self)
+        self.ref_window.grab_set()
 
-    def _browse_ui_file(self):
-        file_path = filedialog.askopenfilename(
-            title="Select Excel file with UI reference images",
-            filetypes=[("Excel files", "*.xlsx")]
+        ctk.CTkLabel(self.ref_window, text="Date:", font=ctk.CTkFont("Segoe UI", 14)).pack(pady=(30, 0))
+        self.ref_date_entry = ctk.CTkEntry(self.ref_window, width=220)
+        self.ref_date_entry.pack(pady=(5, 15))
+
+        ctk.CTkLabel(self.ref_window, text="Update:", font=ctk.CTkFont("Segoe UI", 14)).pack()
+        self.ref_update_entry = ctk.CTkEntry(self.ref_window, width=220)
+        self.ref_update_entry.pack(pady=(5, 15))
+
+        ctk.CTkLabel(self.ref_window, text="Part In Charge:", font=ctk.CTkFont("Segoe UI", 14)).pack()
+        self.ref_pic_entry = ctk.CTkEntry(self.ref_window, width=220)
+        self.ref_pic_entry.pack(pady=(5, 25))
+
+        btn_create = ctk.CTkButton(
+            self.ref_window, text="Create",
+            font=ctk.CTkFont("Segoe UI", 14, "bold"),
+            fg_color=BTN_GREEN, hover_color=BTN_GREEN_HV, text_color="white",
+            command=self.create_reference_file
         )
-        if file_path:
-            self.ui_file_path.set(file_path)
+        btn_create.pack(pady=10)
 
-    def start_binary_verification(self):
-        self._set_ui_busy(True)
-        self.binary_result_label.configure(text="Loading...", text_color="black")
-        threading.Thread(target=self._compare_versions, daemon=True).start()
-
-    def start_ui_verification(self):
-        self._set_ui_busy(True)
-        self.ui_result_frame.configure(text="Loading...", text_color="black")
-        threading.Thread(target=self.compare_ui_images, daemon=True).start()
-
-    def extract_ui_images_from_excel(self, excel_file):
-        try:
-            from openpyxl import load_workbook
-            os.makedirs("ref_img", exist_ok=True)
-            for f in glob("ref_img/*.png"):
-                try: os.remove(f)
-                except Exception: pass
-
-            workbook = load_workbook(excel_file)
-            sheet = workbook.active
-            images_info = []
-
-            for img in sheet._images:
-                if hasattr(img, 'anchor') and hasattr(img.anchor, '_from'):
-                    cell = img.anchor._from
-                    images_info.append((cell.row, cell.col, img))
-
-            images_info.sort(key=lambda x: (x[0], x[1]))
-            extracted_images = []
-            
-            for idx, (row, col, img) in enumerate(images_info):
-                image_path = os.path.join("ref_img", f"extracted_image_{idx + 1}.png")
-                with open(image_path, "wb") as img_file:
-                    img_file.write(img._data())
-                extracted_images.append(image_path)
-            return extracted_images
-
-        except zipfile.BadZipFile:
-            messagebox.showerror("File Error", "File is not a valid zip archive (not a true .xlsx).")
-            return []
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to extract images: {str(e)}")
-            return []
-
-    def compare_ui_images(self):
-        excel_file = self.ui_file_path.get()
-        if not excel_file:
-            self.after(0, lambda: messagebox.showerror("Error", "Please select an Excel file for UI verification"))
-            self.after(0, lambda: self._set_ui_busy(False))
+    def create_reference_file(self):
+        if not os.path.exists("Book1.xlsx"):
+            messagebox.showerror("Error", "'Book1.xlsx' not found in the current directory.", parent=self.ref_window)
             return
 
-        try:
-            import cv2
-            ref_images = self.extract_ui_images_from_excel(excel_file)
-            if len(ref_images) < 4:
-                self.after(0, lambda: messagebox.showerror("Error", f"Extracted only {len(ref_images)} images, need 4"))
-                self.after(0, lambda: self._set_ui_busy(False))
-                return
-
-            if not self.capture_device_images():
-                self.after(0, lambda: self._set_ui_busy(False))
-                return
-
-            target_images = sorted(glob(os.path.join(os.path.dirname(os.path.abspath(__file__)),'target_img/*.*')))
-            if len(target_images) < 4:
-                self.after(0, lambda: messagebox.showerror("Error", f"Captured only {len(target_images)} screenshots"))
-                self.after(0, lambda: self._set_ui_busy(False))
-                return
-
-            device_model = run_adb("shell", "getprop", "ro.product.model")
-            if device_model == "Not Found": device_model = "UnknownDevice"
-            os.makedirs(device_model, exist_ok=True)
-
-            self.comparison_images = []
-            results = []
-            all_pass = True
-
-            for i in range(min(4, len(ref_images), len(target_images))):
-                try:
-                    ref_img = cv2.imread(ref_images[i])
-                    target_img = cv2.imread(target_images[i])
-                    if ref_img is None or target_img is None:
-                        raise ValueError("Failed to load image via cv2")
-
-                    result_img, missing_apps, misplaced_apps = self.compare_launcher_ui(ref_img, target_img)
-                    output_path = os.path.join(device_model, f"comparison_result_{i + 1}.png")
-                    cv2.imwrite(output_path, result_img)
-                    self.comparison_images.append(output_path) 
-
-                    if missing_apps or misplaced_apps:
-                        results.append(f"Image {i + 1}: FAIL - Missing: {len(missing_apps)}, Misplaced: {len(misplaced_apps)}")
-                        all_pass = False
-                    else:
-                        results.append(f"Image {i + 1}: PASS")
-                except Exception as e:
-                    results.append(f"Image {i + 1}: Error - {str(e)}")
-                    all_pass = False
-
-            results.append("<<CLICK TO SHOW IMAGES>>")
-
-            # Thread-safe UI update
-            self.after(0, lambda: self._update_ui_results_gui(results, all_pass))
-
-        except ImportError:
-            self.after(0, lambda: messagebox.showerror("Error", "Required library (cv2) not available"))
-            self.after(0, lambda: self._set_ui_busy(False))
-        except Exception as e:
-            self.after(0, lambda: messagebox.showerror("Error", f"UI comparison failed: {str(e)}"))
-            self.after(0, lambda: self._set_ui_busy(False))
-
-    def _update_ui_results_gui(self, results, all_pass):
-        self.result_listbox.delete(0, tk.END)
-        for result in results:
-            self.result_listbox.insert(tk.END, result)
-
-        if all_pass:
-            self.ui_status = True
-            self.ui_result_frame.configure(text="PASS", text_color="#4CF21B")
-        else:
-            self.ui_status = False
-            self.ui_result_frame.configure(text="FAIL", text_color="#D41111")
-
-        self.update_final_result()
-        self.result_listbox.bind('<<ListboxSelect>>', self.on_listbox_select)
-        self._set_ui_busy(False)
-
-    def compare_launcher_ui(self, ref, target, similarity_thresh=0.70, position_tol=80):
-        try:
-            import cv2
-            if ref is None or target is None:
-                raise ValueError("Image not loaded")
-
-            ref_h, ref_w = ref.shape[:2]
-            tgt_h, tgt_w = target.shape[:2]
-            scale_x = tgt_w / ref_w
-            scale_y = tgt_h / ref_h
-
-            result_img = target.copy()
-            gray_ref = cv2.cvtColor(ref, cv2.COLOR_BGR2GRAY)
-            thresh = cv2.adaptiveThreshold(gray_ref, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 11, 2)
-            contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-            icon_boxes = []
-            for cnt in contours:
-                x, y, w, h = cv2.boundingRect(cnt)
-                if h == 0: continue
-                ratio = w / float(h)
-                if (0.7 < ratio < 1.3 and 20 < w < 120 and 20 < h < 120):
-                    icon_boxes.append((x, y, w, h))
-
-            icon_boxes = sorted(icon_boxes, key=lambda b: (b[1], b[0]))
-            orb = cv2.SIFT_create(nfeatures=3000)
-
-            missing_apps = []
-            misplaced_apps = []
-
-            for idx, (x, y, w, h) in enumerate(icon_boxes):
-                ref_icon = ref[y:y + h, x:x + w]
-                kp1, des1 = orb.detectAndCompute(ref_icon, None)
-                if des1 is None: continue
-
-                expected_x = int(x * scale_x)
-                expected_y = int(y * scale_y)
-                search_margin = 150
-                sx1 = max(0, expected_x - search_margin)
-                sy1 = max(0, expected_y - search_margin)
-                sx2 = min(tgt_w, expected_x + int(w * scale_x) + search_margin)
-                sy2 = min(tgt_h, expected_y + int(h * scale_y) + search_margin)
-
-                search_roi = target[sy1:sy2, sx1:sx2]
-                if search_roi.size == 0: continue
-
-                ref_resized = cv2.resize(ref_icon, (max(10, int(w * scale_x)), max(10, int(h * scale_y))))
-                match = cv2.matchTemplate(search_roi, ref_resized, cv2.TM_CCOEFF_NORMED)
-                _, max_val, _, max_loc = cv2.minMaxLoc(match)
-
-                if max_val < similarity_thresh:
-                    missing_apps.append({"icon_id": idx, "expected": (expected_x, expected_y)})
-                    cv2.rectangle(result_img, (expected_x, expected_y), (expected_x + int(w * scale_x), expected_y + int(h * scale_y)), (0, 0, 255), 3)
-                    cv2.putText(result_img, "MISSING", (expected_x, expected_y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-                    continue
-
-                found_x = sx1 + max_loc[0]
-                found_y = sy1 + max_loc[1]
-                if abs(found_x - expected_x) > position_tol or abs(found_y - expected_y) > position_tol:
-                    misplaced_apps.append({"icon_id": idx, "expected": (expected_x, expected_y), "found": (found_x, found_y)})
-                    cv2.rectangle(result_img, (found_x, found_y), (found_x + ref_resized.shape[1], found_y + ref_resized.shape[0]), (0, 165, 255), 3)
-                    cv2.line(result_img, (expected_x, expected_y), (found_x, found_y), (0, 165, 255), 2)
-                    cv2.putText(result_img, "MISPLACED", (found_x, found_y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
-
-            return result_img, missing_apps, misplaced_apps
-
-        except Exception as e:
-            print(f"Error in compare_launcher_ui: {str(e)}")
-            return target.copy() if target is not None else None, [], []
-
-    def on_listbox_select(self, event):
-        if not self.result_listbox.curselection(): return
-        selected_index = self.result_listbox.curselection()[0]
-        if self.result_listbox.get(selected_index) == "<<CLICK TO SHOW IMAGES>>":
-            self.show_comparison_images()
-
-    def show_comparison_images(self):
-        if not hasattr(self, 'comparison_images') or not self.comparison_images:
-            messagebox.showinfo("Info", "No comparison images available")
+        if len(arr) < 3:
+            messagebox.showerror("Error", "Device info not fetched. Please click 'Get Device Info' first.", parent=self.ref_window)
             return
-        
-        try:
-            import cv2
-            windows_opened = False
-            
-            for image_path in self.comparison_images:
-                # Convert to absolute path to guarantee it correctly finds the folder
-                abs_path = os.path.abspath(image_path)
-                
-                if os.path.exists(abs_path):
-                    img = cv2.imread(abs_path)
-                    if img is not None:
-                        height, width = img.shape[:2]
-                        max_height = 800
-                        if height > max_height:
-                            scale = max_height / height
-                            img = cv2.resize(img, (int(width * scale), max_height))
-                        
-                        window_name = os.path.basename(abs_path)
-                        
-                        try:
-                            # Attempt to display the image
-                            cv2.imshow(window_name, img)
-                            windows_opened = True
-                            
-                            index = self.comparison_images.index(image_path)
-                            cv2.moveWindow(window_name, 100 + (index % 2) * 600, 100 + (index // 2) * 500)
-                            
-                        except cv2.error as cv_err:
-                            # Catch the specific Headless OpenCV error you are experiencing
-                            if "not implemented" in str(cv_err).lower() or "rebuild the library" in str(cv_err).lower():
-                                messagebox.showerror(
-                                    "OpenCV Installation Error", 
-                                    "Your OpenCV installation does not support UI windows.\n"
-                                    "You currently have 'opencv-python-headless' installed.\n\n"
-                                    "To fix this, open your terminal and run:\n"
-                                    "pip uninstall opencv-python-headless\n"
-                                    "pip install opencv-python"
-                                )
-                                return
-                            else:
-                                raise cv_err
-                    else:
-                        messagebox.showerror("Error", f"Failed to read image data from: {abs_path}")
-                else:
-                    messagebox.showerror("Error", f"Image not found at: {abs_path}")
 
-            # Only pause the script if windows actually successfully opened
-            if windows_opened:
-                cv2.waitKey(0)
-                cv2.destroyAllWindows()
-                
-        except ImportError:
-            messagebox.showerror("Error", "Required library (cv2) not available to show images")
-        except Exception as e:
-            messagebox.showerror("Error", f"An unexpected error occurred: {str(e)}")
+        date_val = self.ref_date_entry.get().strip()
+        update_val = self.ref_update_entry.get().strip()
+        pic_val = self.ref_pic_entry.get().strip()
 
-    def capture_device_images(self):
+        self._set_ui_busy(True)
+        threading.Thread(target=self._reference_creation_worker, args=(date_val, update_val, pic_val), daemon=True).start()
+
+    def _reference_creation_worker(self, date_val, update_val, pic_val):
         try:
-            import cv2
-            os.makedirs("target_img", exist_ok=True)
-            for f in glob("target_img/*.png"):
+            import openpyxl
+            from openpyxl.drawing.image import Image
+            from openpyxl.drawing.spreadsheet_drawing import OneCellAnchor, AnchorMarker
+            from openpyxl.drawing.xdr import XDRPositiveSize2D
+            from openpyxl.utils.units import pixels_to_EMU
+            from openpyxl.styles import Alignment
+
+            os.makedirs("reference", exist_ok=True)
+            for f in glob("reference/*.png"):
                 try: os.remove(f)
                 except Exception: pass
 
             run_adb("shell", "input", "tap", "600", "2250")
             run_adb("shell", "input", "tap", "600", "2250")
-            run_adb("shell", "screencap", "/sdcard/target1.png")
+            run_adb("shell", "screencap", "/sdcard/ref1.png")
             time.sleep(0.3)
             run_adb("shell", "input", "swipe", "900", "700", "300", "700")
             time.sleep(0.2)
-            run_adb("shell", "screencap", "/sdcard/target2.png")
+            run_adb("shell", "screencap", "/sdcard/ref2.png")
             time.sleep(0.2)
             run_adb("shell", "input", "swipe", "500", "1500", "500", "500")
             time.sleep(0.1)
             run_adb("shell", "input", "swipe", "300", "700", "900", "700")
-            run_adb("shell", "screencap", "/sdcard/target3.png")
+            run_adb("shell", "screencap", "/sdcard/ref3.png")
             time.sleep(0.2)
             run_adb("shell", "input", "swipe", "900", "700", "300", "700")
-            run_adb("shell", "screencap", "/sdcard/target4.png")
+            run_adb("shell", "screencap", "/sdcard/ref4.png")
 
-            run_adb("pull", "/sdcard/target1.png", "target_img")
-            run_adb("pull", "/sdcard/target2.png", "target_img")
-            run_adb("pull", "/sdcard/target3.png", "target_img")
-            run_adb("pull", "/sdcard/target4.png", "target_img")
+            run_adb("pull", "/sdcard/ref1.png", "reference")
+            run_adb("pull", "/sdcard/ref2.png", "reference")
+            run_adb("pull", "/sdcard/ref3.png", "reference")
+            run_adb("pull", "/sdcard/ref4.png", "reference")
 
-            for target_path in glob('target_img/*.png'):
-                img = cv2.imread(target_path)
-                if img is not None:
-                    cv2.imwrite(target_path, img)
-            return True
-        except ImportError:
-            self.after(0, lambda: messagebox.showerror("Error", "Required library (cv2) not available"))
-            return False
-        except Exception as e:
-            self.after(0, lambda: messagebox.showerror("Error", f"Failed to capture screenshots: {str(e)}"))
-            return False
+            import cv2
+            ref_images = sorted(glob(os.path.abspath(os.path.join('reference', '*.png'))))
+            if len(ref_images) < 4:
+                raise Exception("Failed to capture all 4 reference screenshots.")
 
-    def _browse_file(self):
-        file_path = filedialog.askopenfilename(filetypes=[("Excel files", "*.xlsx")])
-        if file_path:
-            self.file_path.set(file_path)
+            # Validate and format images
+            for img_path in ref_images:
+                img_cv = cv2.imread(img_path)
+                if img_cv is not None:
+                    cv2.imwrite(img_path, img_cv)
 
-    def _compare_versions(self):
-        if not self.file_path.get():
-            self.after(0, lambda: messagebox.showerror("Error", "Please select an Excel file"))
-            self.after(0, lambda: self.binary_result_label.configure(text="PASS/FAIL", text_color="black"))
-            self.after(0, lambda: self._set_ui_busy(False))
-            return
+            # Modify the hardcoded Excel Template
+            original_file = "Book1.xlsx"
+            wb = openpyxl.load_workbook(original_file)
 
-        try:
-            import openpyxl
-            if len(arr) > 5:
-                model = arr[5]
-                customer = arr[2][5:8] if len(arr[2]) >= 8 else ""
-                csc = arr[2]
+            if "History1" in wb.sheetnames:
+                ws_hist = wb["History1"]
+                next_row = ws_hist.max_row + 1
+                ws_hist.cell(row=next_row, column=2, value=date_val)
+                ws_hist.cell(row=next_row, column=3, value=update_val)
+                ws_hist.cell(row=next_row, column=4, value=pic_val)
             else:
-                model = customer = csc = ""
+                raise Exception("Worksheet 'History1' not found in the selected Excel template.")
 
-            if not model:
-                self.after(0, lambda: messagebox.showerror("Error", "Could not fetch Model from device."))
-                self.after(0, lambda: self.binary_result_label.configure(text="PASS/FAIL", text_color="black"))
-                self.after(0, lambda: self._set_ui_busy(False))
-                return
+            if "UI Check" in wb.sheetnames:
+                ws_ui = wb["UI Check"]
 
-            wb = openpyxl.load_workbook(self.file_path.get(), data_only=True)
-            sheet = wb.active
-            headers = [cell.value for cell in sheet[4]] 
-            required_columns = ['Model Name', 'AP(Code) ver.', 'CP(BB) ver.', 'CSC ver.', 'Customer']
-            
-            if not all(col in headers for col in required_columns):
-                missing = [col for col in required_columns if col not in headers]
-                self.after(0, lambda: messagebox.showerror("Invalid Format", f"Missing columns: {', '.join(missing)}"))
-                self.after(0, lambda: self.binary_result_label.configure(text="PASS/FAIL", text_color="black"))
-                self.after(0, lambda: self._set_ui_busy(False))
-                return
+                # Extract properties
+                ap_val = arr[0] if len(arr) > 0 else ""
+                cp_val = arr[1] if len(arr) > 1 else ""
+                csc_val = arr[2] if len(arr) > 2 else ""
 
-            col_index = {col: headers.index(col) for col in required_columns}
-            matching_row = None
+                # Insert AP, CP, CSC combined in cell B6 centered
+                combined_val = f"{ap_val}\n{cp_val}\n{csc_val}"
+                ws_ui["B6"] = combined_val
+                ws_ui["B6"].alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
-            for row in sheet.iter_rows(min_row=5, values_only=True):
-                try:
-                    row_data = {col: row[col_index[col]] for col in required_columns}
-                    model_name = str(row_data['Model Name'])[:8].upper() if row_data['Model Name'] else ""
-                    row_customer = str(row_data['Customer']).upper() if row_data['Customer'] else ""
-                    row_csc = str(row_data['CSC ver.']).upper() if row_data['CSC ver.'] else ""
+                # Adjust Cell Dimensions to fit the images and text nicely
+                ws_ui.row_dimensions[6].height = 620       # Adjusted higher to fit 780px comfortably
+                ws_ui.column_dimensions['D'].width = 120   # Widened to fit two 360px images side by side
+                ws_ui.column_dimensions['E'].width = 120
+                ws_ui.column_dimensions['B'].width = 35    # Widened to perfectly fit AP/CP/CSC text
 
-                    if (model_name == model.upper() and row_customer == customer.upper() and row_csc == csc.upper()):
-                        matching_row = row_data
-                        break
-                except Exception:
-                    continue
+                def insert_img_emued(ws, img_path, col_idx, row_idx, col_offset_px):
+                    img = Image(img_path)
+                    
+                    # Applying specific sizes: Width=360, Height=780 for standard vertical phone screen. 
+                    img.width = 360
+                    img.height = 780
+                    
+                    # col=3 means column D, col=4 means column E. (0-indexed in EMU markers)
+                    marker = AnchorMarker(
+                        col=col_idx, colOff=pixels_to_EMU(col_offset_px),
+                        row=row_idx, rowOff=0
+                    )
+                    size = XDRPositiveSize2D(pixels_to_EMU(img.width), pixels_to_EMU(img.height))
+                    img.anchor = OneCellAnchor(_from=marker, ext=size)
+                    ws.add_image(img)
 
-            if not matching_row:
-                self.after(0, lambda: messagebox.showwarning("Not Found", f"Model '{model}' with customer '{customer}' and CSC '{csc}' not found in Excel file."))
-                self.after(0, lambda: self.binary_result_label.configure(text="PASS/FAIL", text_color="black"))
-                self.after(0, lambda: self._set_ui_busy(False))
-                return
+                # D6 -> col_idx = 3, row_idx = 5 
+                insert_img_emued(ws_ui, ref_images[0], col_idx=3, row_idx=5, col_offset_px=0)
+                insert_img_emued(ws_ui, ref_images[1], col_idx=3, row_idx=5, col_offset_px=370) 
 
-            # Thread-safe UI update
-            self.after(0, lambda: self._update_binary_results_gui(matching_row))
+                # E6 -> col_idx = 4, row_idx = 5
+                insert_img_emued(ws_ui, ref_images[2], col_idx=4, row_idx=5, col_offset_px=0)
+                insert_img_emued(ws_ui, ref_images[3], col_idx=4, row_idx=5, col_offset_px=370) 
 
-        except zipfile.BadZipFile:
-            self.after(0, lambda: messagebox.showerror("File Error", "File is not a valid zip archive (not a true .xlsx)."))
-            self.after(0, lambda: self.binary_result_label.configure(text="PASS/FAIL", text_color="black"))
-            self.after(0, lambda: self._set_ui_busy(False))
-        except ImportError:
-            self.after(0, lambda: messagebox.showerror("Error", "Required library (openpyxl) not available"))
-            self.after(0, lambda: self._set_ui_busy(False))
-        except Exception as e:
-            self.after(0, lambda: messagebox.showerror("Error", f"Comparison failed: {str(e)}"))
-            self.after(0, lambda: self.binary_result_label.configure(text="PASS/FAIL", text_color="black"))
-            self.after(0, lambda: self._set_ui_busy(False))
+            else:
+                raise Exception("Worksheet 'UI Check' not found in the selected Excel template.")
 
-    def _update_binary_results_gui(self, matching_row):
-        for item in self.comp_tree.get_children():
-            self.comp_tree.delete(item)
+            # Save the new file based on model name
+            model_name = arr[5] if len(arr) > 5 else "Unknown_Model"
+            new_filename = f"{model_name}.xlsx"
+            wb.save(new_filename)
 
-        fields = [
-            ("AP", arr[0] if len(arr)>0 else "N/A", "AP(Code) ver."),
-            ("CP", arr[1] if len(arr)>1 else "N/A", "CP(BB) ver."),
-            ("CSC", arr[2] if len(arr)>2 else "N/A", "CSC ver.")
-        ]
-
-        all_match = True
-        for prop, device_val, excel_key in fields:
-            excel_val = str(matching_row[excel_key]).strip().upper() if matching_row[excel_key] else ""
-            device_val = device_val.strip().upper() if device_val else ""
-            match = "✅" if device_val == excel_val else "❌"
-            self.comp_tree.insert("", "end", values=(prop, device_val, excel_val, match))
-            if device_val != excel_val:
-                all_match = False
-
-        if all_match:
-            self.comp_tree.insert("", "end", values=("FINAL RESULT", "", "", "ALL VALUES MATCH ✅"))
-            self.binary_status = True
-            self.binary_result_label.configure(text="PASS", text_color='#4CF21B')
-        else:
-            self.comp_tree.insert("", "end", values=("FINAL RESULT", "", "", "SOME VALUES DON'T MATCH ❌"))
-            self.binary_status = False
-            self.binary_result_label.configure(text="FAIL", text_color="#D41111")
-        
-        self.update_final_result()
-        self._set_ui_busy(False)
-
-    def _validate_entry_length(self, event, expected_length, current_key):
-        entry = event.widget
-        text = entry.get().strip()
-        if len(text) > expected_length:
-            entry.delete(expected_length, tk.END)
-            return
-        if len(text) == expected_length:
-            current_index = list(self._entries.keys()).index(current_key)
-            next_index = current_index + 1
-            if next_index < len(self._entries):
-                next_key = list(self._entries.keys())[next_index]
-                self._entries[next_key].focus_set()
-
-    def _build_row(self, parent: ctk.CTkFrame, label_text: str, key: str):
-        row = ctk.CTkFrame(parent, fg_color="transparent")
-        row.pack(fill="x", pady=6)
-
-        ctk.CTkLabel(
-            row, text=label_text, font=ctk.CTkFont("Segoe UI", 12),
-            text_color="#111111", fg_color="transparent", width=120, anchor="w"
-        ).pack(side="left")
-
-        entry = ctk.CTkEntry(
-            row, width=200, fg_color=ENTRY_BG, border_color="#BBBBBB",
-            text_color="#111111", height=36, corner_radius=8
-        )
-        entry.pack(side="left", padx=(0, 18))
-        self._entries[key] = entry
-
-        if key in ['eid', 'imei', 'sn']:
-            expected_length = 32 if key == 'eid' else (15 if key == 'imei' else 11)
-            entry.bind("<KeyRelease>", lambda event, exp_len=expected_length, curr_key=key:
-                       self._validate_entry_length(event, exp_len, curr_key))
-
-        fetched_lbl = ctk.CTkLabel(
-            row, text="— — —", font=ctk.CTkFont("Segoe UI", 10),
-            text_color="#4a4a4a", fg_color="transparent", width=130, anchor="w"
-        )
-        fetched_lbl.pack(side="left",expand=False)
-        self._fetched_lbls[key] = fetched_lbl
-
-        icons = ctk.CTkFrame(row, fg_color="transparent")
-        icons.pack(side="right", padx=6)
-
-        fail_lbl = ctk.CTkLabel(
-            icons, text="✗", font=ctk.CTkFont("Segoe UI", 20, "bold"),
-            text_color="#888888", fg_color="transparent", width=26
-        )
-        fail_lbl.pack(side="left", padx=2)
-        self._fail_lbls[key] = fail_lbl
-
-        pass_lbl = ctk.CTkLabel(
-            icons, text="✓", font=ctk.CTkFont("Segoe UI", 20, "bold"),
-            text_color="#888888", fg_color="transparent", width=26
-        )
-        pass_lbl.pack(side="left", padx=2)
-        self._pass_lbls[key] = pass_lbl
-
-    def _set_status(self, key: str, state: str):
-        if state == "pass":
-            self._fail_lbls[key].configure(text_color="#AAAAAA")
-            self._pass_lbls[key].configure(text_color="#42EE42")
-        elif state == "fail":
-            self._fail_lbls[key].configure(text_color="#CC2222")
-            self._pass_lbls[key].configure(text_color="#AAAAAA")
-        else:
-            self._fail_lbls[key].configure(text_color="#888888")
-            self._pass_lbls[key].configure(text_color="#888888")
-
-    def _set_ui_busy(self, busy: bool):
-        state = "disabled" if busy else "normal"
-        buttons = [self._btn_fetch, self._btn_clear, self.info_button, self.bin_comp, self.ui_comp]
-        if hasattr(self, '_btn_export'):
-            buttons.append(self._btn_export)
-        for btn in buttons:
-            if hasattr(btn, 'configure'):
-                btn.configure(state=state)
-
-    def _on_fetch(self):
-        inputs = {key: self._entries[key].get().strip() for key, *_ in [(k,) for _, k, _ in self.FIELDS]}
-
-        if inputs['eid'] and len(inputs['eid']) != 32:
-            messagebox.showerror("Invalid EID", "EID must be 32 characters long")
-            return
-        if inputs['sn'] and len(inputs['sn']) != 11:
-            messagebox.showerror("Invalid S/N", "S/N must be 11 characters long")
-            return
-        if inputs['imei'] and len(inputs['imei']) != 15:
-            messagebox.showerror("Invalid IMEI", "IMEI must be 15 characters long")
-            return
-        if not any(inputs.values()):
-            messagebox.showwarning("Input Required", "Enter at least one value to compare.")
-            return
-
-        self._result_lbl.configure(text="Fetching…", text_color="#333333")
-        self._set_ui_busy(True)
-
-        def worker():
-            verdicts: list[bool] = []
-            for _, key, fn in self.FIELDS:
-                scanned = self._entries[key].get().strip()
-                if not scanned:
-                    self.after(0, lambda k=key: (
-                        self._fetched_lbls[k].configure(text="— — —"),
-                        self._set_status(k, "idle")
-                    ))
-                    continue
-
-                fetched = fn()
-                match = (scanned == fetched) and fetched != "Not Found"
-                verdicts.append(match)
-
-                status = "pass" if match else "fail"
-                self.after(0, lambda k=key, v=fetched, s=status: (
-                    self._fetched_lbls[k].configure(text=v),
-                    self._set_status(k, s),
-                ))
-
-            self.after(0, lambda: self._finish_compare(verdicts))
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _finish_compare(self, verdicts: list[bool]):
-        if not verdicts:
-            self._result_lbl.configure(text="PASS/FAIL", text_color="black")
-        elif all(verdicts):
-            self.eid_status=True
-            self.update_final_result()
-            self._result_lbl.configure(text="✅  PASS", text_color="#1A7A1A")
-        else:
-            self.eid_status=False
-            self.update_final_result()
-            self._result_lbl.configure(text="❌  FAIL", text_color="#BB0000")
-        self._set_ui_busy(False)
-
-    def _clear(self):
-        self.binary_status = None
-        self.ui_status = None
-        self.eid_status = None
-
-        if hasattr(self, 'binary_result_label'):
-            self.binary_result_label.configure(text="PASS/FAIL", text_color="black")
-        if hasattr(self, 'ui_result_frame'):
-            self.ui_result_frame.configure(text="PASS/FAIL", text_color="black")
-        if hasattr(self, 'eid_result_label'):
-            self.eid_result_label.configure(text="PASS/FAIL", text_color="black")
-
-        if hasattr(self, 'final_result_label'):
-            self.final_result_label.configure(text="Pending...", text_color="#333333")
-            
-        for entry in self._entries.values():
-            entry.delete(0, tk.END)
-
-        for _, key, _ in self.FIELDS:
-            self._fetched_lbls[key].configure(text="— — —")
-            self._set_status(key, "idle")
-
-        self._result_lbl.configure(text="PASS/FAIL", text_color="black")
-        self._tree.delete(*self._tree.get_children())
-
-        if hasattr(self, 'comp_tree'):
-            self.comp_tree.delete(*self.comp_tree.get_children())
-        if hasattr(self, 'result_listbox'):
-            self.result_listbox.delete(0, tk.END)
-        if hasattr(self, 'final_result_label'):
-            self.final_result_label.configure(text=".... ", text_color="black")
-
-    def _on_get_info(self):
-        try:
-            serial = run_adb("get-serialno")
-            if not serial or serial == "unknown" or serial == "Not Found":
-                raise Exception("Device not connected")
-
-            self._tree.delete(*self._tree.get_children())
-            self._tree.insert("", "end", values=("Loading…", "Please wait"))
-            self._set_ui_busy(True)
-
-            def worker():
-                try:
-                    data = fetch_device_info()
-                    self.after(0, lambda: self._populate_tree(data))
-                except Exception as e:
-                    self.after(0, lambda: messagebox.showerror("Error", f"Failed to fetch device info: {str(e)}"))
-                    self.after(0, lambda: self._set_ui_busy(False))
-
-            threading.Thread(target=worker, daemon=True).start()
+            self.after(0, lambda: messagebox.showinfo("Success", f"Reference File '{new_filename}' created successfully!", parent=self.ref_window))
+            self.after(0, lambda: self.ref_window.destroy())
 
         except Exception as e:
-            messagebox.showerror("Error", f"Device error: {str(e)}")
-            self._set_ui_busy(False)
-
-    def _populate_tree(self, data: dict):
-        self._tree.delete(*self._tree.get_children())
-        self.last_device_info = data
-        for key, value in data.items():
-            self._tree.insert("", "end", values=(key, value, "copy"))
-        self._set_ui_busy(False)
-
-if __name__ == "__main__":
-    app = App()
-    app.mainloop()
-
-
-
-????????????????????????????
-
-
-
-import subprocess
-import threading
-import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
-import time
-from glob import glob
-import os
-import sys
-import customtkinter as ctk
-import shutil
-import zipfile
-
-def resource_path(relative_path):
-    try:
-        if getattr(sys, 'frozen', False):
-            base_path = sys._MEIPASS
-        else:
-            base_path = os.path.abspath(".")
-        return os.path.join(base_path, relative_path)
-    except Exception:
-        return relative_path
-
-ADB_PATH = resource_path(r'adb.exe')
-
-# Colors
-BG           = "#ffffff"
-CONT         = "#D8E0F2"
-ENTRY_BG     = "#ffffff"
-TABLE_BG     = "#ffffff"
-BTN_GREEN    = "#8fce00"
-BTN_GREEN_HV = "#4CAF50"
-BTN_WHITE    = "#EDEDED"
-BTN_WHITE_HV = "#E8E8E8"
-BTN_EXP      = "#1D338A"
-BTN_EXP_HOV  = "#1A244A"
-
-# Functions
-
-def run_adb(*args):
-    try:
-        startupinfo = subprocess.STARTUPINFO()
-        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        startupinfo.wShowWindow = subprocess.SW_HIDE
-
-        result = subprocess.check_output(
-            [ADB_PATH, *args],
-            startupinfo=startupinfo,
-            stderr=subprocess.DEVNULL,
-            timeout=10
-        ).decode().strip()
-        return result
-    except Exception:
-        return "Not Found"
-
-def get_eid() -> str:
-    try:
-        run_adb("shell", "input", "tap", "600", "2250")
-        result = run_adb("shell",
-            "input keyevent KEYCODE_CALL; sleep 1; input text '*#06#'; "
-            "uiautomator dump --compressed /dev/stdout | grep -oE '[0-9]{32}'")
-        eid = result.strip()
-        return eid if eid else "Not Found"
-    except Exception:
-        return "Not Found"
-
-def get_serial() -> str:
-    try:
-        return run_adb("shell", "getprop", "ro.serialno") or " "
-    except Exception:
-        return "Not Found"
-
-arr = [] ### array which contain the values for version, rf cal etc.
-def get_version() -> str:
-    global arr
-    arr.clear()
-    try:
-        text = run_adb("shell",
-            "input keyevent KEYCODE_CALL; sleep 1; input text '*#12580*369#';",
-            " uiautomator dump --compressed /dev/stdout | grep string")
-        version = text
-
-        if not version or version == "Not Found":
-            arr.extend(["N/A", "N/A", "N/A", "N/A", "N/A"])
-            return "Not Found"
-
-        content = version.split()
-        a = content[50].strip('"') if len(content) > 50 else "N/A"
-        b = content[72].strip('"') if len(content) > 72 else "N/A"
-        c = content[94].strip('"') if len(content) > 94 else "N/A"
-        d = content[117].strip('"') if len(content) > 117 else "N/A"
-        e = content[140].strip('"') if len(content) > 140 else "N/A"
-        arr.extend([a, b, c, d, e])
-        return "Success"
-    except Exception:
-        arr.extend(["Error", "Error", "Error", "Error", "Error"])
-        return "Error"
-
-def get_imei() -> str:
-    try:
-        run_adb("shell", "input", "tap", "600", "2250")
-        result = run_adb("shell",
-            "input keyevent KEYCODE_CALL; sleep 1; input text '*#06#'; "
-            "uiautomator dump --compressed /dev/stdout | grep -oE '[0-9]{15}'")
-        imei = result.strip()
-        return imei[:15] if imei else "Not Found"
-    except Exception:
-        return "Not Found"
-
-def fetch_device_info() -> dict:
-    try:
-        run_adb("shell", "input", "tap", "600", "2250")
-        get_version()
-        serial       = run_adb("get-serialno")          or "N/A"
-        brand        = run_adb("shell", "getprop", "ro.product.brand")          or "N/A"
-        model        = run_adb("shell", "getprop", "ro.product.model")          or "N/A"
-        android_ver  = run_adb("shell", "getprop", "ro.build.version.release")  or "N/A"
-        arr.append(model) #5th index
-        
-        battery = "N/A"
-        battery_dump = run_adb("shell", "dumpsys", "battery")
-        if battery_dump != "Not Found":
-            for ln in battery_dump.splitlines():
-                if "level:" in ln:
-                    battery = ln.split(":")[-1].strip() + " %"
-                    break
-
-        wifi_mac = "N/A"
-        ip_dump = run_adb("shell", "ip", "addr", "show", "wlan0")
-        if ip_dump != "Not Found":
-            for ln in ip_dump.splitlines():
-                if "link/ether" in ln:
-                    wifi_mac = ln.split()[1]
-                    break
-
-        bt_mac = (
-            run_adb("shell", "settings", "get", "secure", "bluetooth_address") or "N/A"
-        )
-
-        return {
-            "Serial No": serial,
-            "Brand": brand.upper() if brand != "N/A" else "N/A",
-            "Model": model,
-            "Android Version": android_ver,
-            "Battery": battery,
-            "WiFi MAC": wifi_mac.upper() if wifi_mac != "N/A" else "N/A",
-            "Bluetooth MAC": bt_mac.upper() if bt_mac != "N/A" else "N/A",
-            "Base Version": arr[0] if len(arr) > 0 else "N/A",
-            "RF Cal": arr[3] if len(arr) > 3 else "N/A",
-            "HW Rev": arr[4] if len(arr) > 4 else "N/A"
-        }
-    except Exception as e:
-        return {"Error": f"Failed fetching info: {str(e)}"}
-
-class App(ctk.CTk):
-    FIELDS = [
-        ("Scan box EID :",  "eid",  get_eid),
-        ("Scan box S/N :",  "sn",   get_serial),
-        ("Scan box IMEI :", "imei", get_imei),
-    ]
-
-    def copy_to_clipboard(self, text: str):
-        try:
-            self.clipboard_clear()
-            self.clipboard_append(text)
-        except Exception:
-            pass
-
-    def _on_export(self):
-        try:
-            self._set_ui_busy(True)
-
-            if not hasattr(self, 'last_device_info') or not self.last_device_info:
-                messagebox.showerror("No Data", "Fetch device info first")
-                return
-
-            try:
-                file_path = filedialog.asksaveasfilename(
-                    defaultextension=".xlsx",
-                    filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")],
-                    initialfile="device_info.xlsx"
-                )
-                if not file_path:
-                    return
-
-                try:
-                    import pandas as pd
-                    from datetime import datetime
-
-                    timestamp = datetime.now().strftime("%H:%M:%S")
-                    dates = datetime.now().strftime("%d-%m-%y")
-                    data = {
-                        "Time": [timestamp],
-                        "Date": [dates],
-                        "Serial": [self.last_device_info.get("Serial No", "N/A")],
-                        "Brand": [self.last_device_info.get("Brand", "N/A")],
-                        "Model": [self.last_device_info.get("Model", "N/A")],
-                        "Android Version": [self.last_device_info.get("Android Version", "N/A")],
-                        "Battery": [self.last_device_info.get("Battery", "N/A")],
-                        "WiFi MAC": [self.last_device_info.get("WiFi MAC", "N/A")],
-                        "BT MAC": [self.last_device_info.get("Bluetooth MAC", "N/A")],
-                        "Base Version": [self.last_device_info.get("Base Version", "N/A")],
-                        "RF Cal": [self.last_device_info.get("RF Cal", "N/A")],
-                        "HW Rev": [self.last_device_info.get("HW Rev", "N/A")],
-                    }
-
-                    try:
-                        existing_df = pd.read_excel(file_path, engine='openpyxl')
-                        new_df = pd.DataFrame(data)
-                        combined_df = pd.concat([existing_df, new_df], ignore_index=True)
-                        combined_df.to_excel(file_path, index=False, engine='openpyxl')
-                        messagebox.showinfo("Success", f"Appended to {file_path}")
-                    except FileNotFoundError:
-                        pd.DataFrame(data).to_excel(file_path, index=False, engine='openpyxl')
-                        messagebox.showinfo("Success", f"Created {file_path}")
-                    except Exception as e:
-                        messagebox.showerror("Excel Error", f"Failed to update Excel file: {str(e)}")
-                except ImportError:
-                    messagebox.showerror("Error", "Required library (pandas/openpyxl) not available")
-                except Exception as e:
-                    messagebox.showerror("Data Error", f"Failed to prepare data: {str(e)}")
-            except Exception as e:
-                messagebox.showerror("File Error", f"File dialog failed: {str(e)}")
-        except Exception as e:
-            messagebox.showerror("Unexpected Error", f"Export failed: {str(e)}")
+            self.after(0, lambda: messagebox.showerror("Error", f"Failed to create reference: {str(e)}", parent=self.ref_window))
         finally:
-            self._set_ui_busy(False)
-
-    def __init__(self):
-        super().__init__()
-        self.title("Integrated OQC Tool")
-        self.geometry("1420x680")
-        self.resizable(True, True)
-        self.configure(fg_color=BG)
-        try:
-            self.iconbitmap('icon_1.ico')
-        except Exception:
-            pass
-        self.binary_status = None
-        self.ui_status = None
-        self.eid_status = None
-        self._entries = {}
-        self._fetched_lbls = {}
-        self._fail_lbls = {}
-        self._pass_lbls = {}
-        self.last_device_info = {}
-        self.file_path = ctk.StringVar()
-        self.ui_file_path = ctk.StringVar()
-        self._build_ui()
-        self.check_device_connection()
-
-    def start_new_verification_round(self):
-        self.binary_status = None
-        self.ui_status = None
-        self.eid_status = None
-        self.final_result_label.configure(text="Pending...", text_color="#333333")
-
-    def update_final_result(self):
-        statuses = {
-            "Binary": self.binary_status,
-            "UI": self.ui_status,
-            "EID": self.eid_status
-        }
-        total_tests = len(statuses)
-        completed_tests = sum(1 for status in statuses.values() if status is not None)
-        passed_tests = sum(1 for status in statuses.values() if status is True)
-
-        if completed_tests == total_tests:
-            if passed_tests == total_tests:
-                self.final_result_label.configure(text="PASS", text_color="#1A7A1A")
-            else:
-                self.final_result_label.configure(text="FAIL", text_color="#BB0000")
-        elif completed_tests > 0:
-            self.final_result_label.configure(
-                text=f"Pending... ({completed_tests}/{total_tests} tests complete)",
-                text_color="#333333"
-            )
-        else:
-            self.final_result_label.configure(text="Pending...", text_color="#333333")
-
-    def _on_tree_click(self, event):
-        try:
-            region = self._tree.identify("region", event.x, event.y)
-            if region == "cell":
-                column = self._tree.identify_column(event.x)
-                item = self._tree.identify_row(event.y)
-                if item and column == "#3":
-                    values = self._tree.item(item, "values")
-                    if values and len(values) >= 2:
-                        self.copy_to_clipboard(values[1])
-        except Exception:
-            pass
-
-    def _build_ui(self):
-        main_container = ctk.CTkFrame(self, fg_color="transparent")
-        main_container.pack(fill="both", expand=True, padx=10, pady=10)
-
-        left_frame = ctk.CTkFrame(main_container, fg_color=CONT, corner_radius=10)
-        left_frame.pack(side="left", fill="both", expand=True, padx=5, pady=5)
-
-        ctk.CTkLabel(
-            left_frame, text="Verification Tool SIEL-P(N)",
-            font=ctk.CTkFont("Segoe UI", 22, "bold"),
-            text_color="black", fg_color="transparent"
-        ).pack(pady=(10, 5))
-
-        self.device_status_label = ctk.CTkLabel(
-            left_frame, text="Device Status: Checking...",
-            font=ctk.CTkFont("Segoe UI", 14),
-            text_color="black", fg_color="transparent"
-        )
-        self.device_status_label.pack(pady=(5, 15))
-
-        input_frame = ctk.CTkFrame(left_frame, fg_color="transparent")
-        input_frame.pack(fill="x", padx=20, pady=(0, 10))
-
-        for label_text, key, _ in self.FIELDS:
-            self._build_row(input_frame, label_text, key)
-
-        button_frame = ctk.CTkFrame(left_frame, fg_color="transparent")
-        button_frame.pack(pady=(10, 15))
-
-        self._btn_fetch = ctk.CTkButton(
-            button_frame, text="Compare",
-            font=ctk.CTkFont("Segoe UI", 14),
-            fg_color=BTN_GREEN, hover_color=BTN_GREEN_HV,
-            text_color="white", width=80, corner_radius=8,
-            command=self._on_fetch
-        )
-        self._btn_fetch.pack(side="left", padx=10)
-
-        self._btn_clear = ctk.CTkButton(
-            button_frame, text="Clear",
-            font=ctk.CTkFont("Segoe UI", 14),
-            fg_color='#A80F0F', hover_color='#6B1313',
-            text_color="white", border_color="black", border_width=2,
-            width=80, corner_radius=8, command=self._clear
-        )
-        self._btn_clear.pack(side="left", padx=10)
-
-        self._result_lbl = ctk.CTkLabel(
-            left_frame, text="PASS/FAIL",
-            font=ctk.CTkFont("Segoe UI", 24, "bold"),
-            text_color="black", fg_color="transparent"
-        )
-        self._result_lbl.pack(pady=(10, 5))
-
-        table_container = ctk.CTkFrame(left_frame, fg_color=TABLE_BG, corner_radius=8)
-        table_container.pack(padx=15, fill="both", expand=True, pady=(5, 10))
-
-        style = ttk.Style()
-        style.theme_use("clam")
-        style.configure(
-            "Vt.Treeview", background=TABLE_BG, fieldbackground=TABLE_BG,
-            foreground="#0F0F0F", rowheight=20, font=("Segoe UI", 13), borderwidth=0,
-        )
-        style.configure(
-            "Vt.Treeview.Heading", background="#BEBEBE", foreground="#1a1a1a",
-            font=("Segoe UI", 14, "bold"), relief="flat",
-        )
-        style.map("Vt.Treeview", background=[("selected", "#A8C8E8")])
-
-        self._tree = ttk.Treeview(
-            table_container, columns=("Key", "Value", "Copy"),
-            show="headings", height=12, style="Vt.Treeview",
-        )
-        self._tree.heading("Key", text="Property")
-        self._tree.heading("Value", text="Value")
-        self._tree.heading("Copy", text="Copy")
-        self._tree.column("Key", width=140, anchor="w")
-        self._tree.column("Value", width=140, anchor="w")
-        self._tree.column("Copy", width=80, anchor="center")
-        self._tree.pack(fill="both", expand=True, padx=2, pady=2)
-        self._tree.bind("<Button-1>", self._on_tree_click)
-
-        self.info_button = ctk.CTkButton(
-            left_frame, text="Get Device Info", font=ctk.CTkFont("Segoe UI", 18),
-            fg_color=BTN_WHITE, hover_color=BTN_WHITE_HV, text_color="black",
-            border_color="#000000", border_width=2, width=180, height=40,
-            corner_radius=8, command=self._on_get_info
-        )
-        self.info_button.pack(pady=(10, 15))
-
-        right_frame = ctk.CTkFrame(main_container, fg_color="transparent")
-        right_frame.pack(side="right", fill="both", expand=True, padx=5, pady=5)
-
-        binary_frame = ctk.CTkFrame(right_frame, fg_color=CONT, corner_radius=10)
-        binary_frame.pack(fill="both", expand=True, padx=0, pady=(0,3))
-        
-        ctk.CTkLabel(
-            binary_frame, text="Binary Comparison",
-            font=ctk.CTkFont("Segoe UI", 22, "bold"), text_color="black"
-        ).pack(pady=(10, 5))
-
-        file_frame = ctk.CTkFrame(binary_frame, fg_color="transparent")
-        file_frame.pack(fill="x", padx=15, pady=10)
-
-        ctk.CTkLabel(file_frame, text="Excel File:", font=ctk.CTkFont("Segoe UI", 14)).pack(side="left")
-        ctk.CTkEntry(file_frame, textvariable=self.file_path, width=280, font=ctk.CTkFont("Segoe UI", 14)).pack(side="left", padx=10)
-        ctk.CTkButton(
-            file_frame, text="Browse", font=ctk.CTkFont("Segoe UI", 14),
-            fg_color=BTN_EXP, hover_color= BTN_EXP_HOV, width=80, command=self._browse_file
-        ).pack(side="left", padx=10)
-
-        self.bin_comp=ctk.CTkButton(
-            file_frame, text="Compare", font=ctk.CTkFont("Segoe UI", 14),
-            fg_color=BTN_GREEN, hover_color=BTN_GREEN_HV, text_color="white",
-            width=80, command=self.start_binary_verification
-        )
-        self.bin_comp.pack(side="left")
-        
-        binary_file_frame = ctk.CTkFrame(file_frame,fg_color='transparent')
-        binary_file_frame.pack(pady=10)
-        
-        self.binary_result_label = ctk.CTkLabel(
-            binary_file_frame, text="PASS/FAIL",
-            font=ctk.CTkFont("Segoe UI", 24, "bold"), text_color="black"
-        )
-        self.binary_result_label.pack(side='left', padx=10)
-
-        table_container_binary = ctk.CTkFrame(binary_frame, fg_color=TABLE_BG, corner_radius=8)
-        table_container_binary.pack(fill="both", expand=True, padx=15, pady=(0, 15))
-
-        self.comp_tree = ttk.Treeview(
-            table_container_binary, columns=("Property", "Device", "Excel", "Match"),
-            show="headings", height=10, style="Vt.Treeview",
-        )
-        self.comp_tree.heading("Property", text="Property")
-        self.comp_tree.heading("Device", text="Extracted")
-        self.comp_tree.heading("Excel", text="PLM Value")
-        self.comp_tree.heading("Match", text="Match")
-        self.comp_tree.column("Property", width=60, anchor="w")
-        self.comp_tree.column("Device", width=80, anchor="w")
-        self.comp_tree.column("Excel", width=80, anchor="w")
-        self.comp_tree.column("Match", width=60, anchor="center")
-        self.comp_tree.pack(fill="both", expand=True)
-
-        ui_frame = ctk.CTkFrame(right_frame, fg_color=CONT, corner_radius=10)
-        ui_frame.pack(fill="both", expand=True, padx=0, pady=(3,0))
-
-        ctk.CTkLabel(
-            ui_frame, text="UI Verification",
-            font=ctk.CTkFont("Segoe UI", 22, "bold"), text_color="black"
-        ).pack(pady=(10, 5))
-
-        ui_file_frame = ctk.CTkFrame(ui_frame, fg_color="transparent")
-        ui_file_frame.pack(fill="x", padx=15, pady=10)
-
-        ctk.CTkLabel(ui_file_frame, text="Excel File:", font=ctk.CTkFont("Segoe UI", 14)).pack(side="left")
-        ui_entry = ctk.CTkEntry(ui_file_frame, textvariable=self.ui_file_path, width=280, font=ctk.CTkFont("Segoe UI", 14))
-        ui_entry.pack(side="left", padx=10)
-        ctk.CTkButton(
-            ui_file_frame, text="Browse", font=ctk.CTkFont("Segoe UI", 14),
-            fg_color=BTN_EXP, hover_color=BTN_EXP_HOV, width=80, command=self._browse_ui_file
-        ).pack(side="left", padx=10)
-
-        self.ui_comp = ctk.CTkButton(
-            ui_file_frame, text="Compare", font=ctk.CTkFont("Segoe UI", 14),
-            fg_color=BTN_GREEN, hover_color=BTN_GREEN_HV, text_color="white",
-            width=80, command=self.start_ui_verification
-        )
-        self.ui_comp.pack(side ='left')
-        
-        ui_file_frame2 = ctk.CTkFrame(ui_file_frame,fg_color='transparent')
-        ui_file_frame2.pack(pady=10)
-        
-        self.ui_result_frame = ctk.CTkLabel(
-            ui_file_frame2, text="PASS/FAIL",
-            font=ctk.CTkFont("Segoe UI", 24, "bold"), text_color="black"
-        )
-        self.ui_result_frame.pack(side='left', padx=10)
-
-        results_frame = ctk.CTkFrame(ui_frame, fg_color=TABLE_BG, corner_radius=8, border_color='black', border_width=1)
-        results_frame.pack(fill="both", expand=True, padx=15, pady=(0, 15))
-
-        self.result_listbox = tk.Listbox(
-            results_frame, bg=TABLE_BG, fg="#0F0F0F",
-            font=("Segoe UI", 12), bd=0, height=10, highlightthickness=0
-        )
-        self.result_listbox.pack(fill="both", expand=True, padx=5, pady=5)
-
-        final_frame = ctk.CTkFrame(self, fg_color="#F0F0F0", corner_radius=10)
-        final_frame.pack(fill="x", padx=10, pady=(0, 10))
-
-        ctk.CTkLabel(
-            final_frame, text="Final Verification Result:",
-            font=ctk.CTkFont("Segoe UI", 20, "bold"), text_color="black"
-        ).pack(side="left", padx=20, pady=10)
-
-        self.final_result_label = ctk.CTkLabel(
-            final_frame, text="Pending...",
-            font=ctk.CTkFont("Segoe UI", 20, "bold"), text_color="#333333"
-        )
-        self.final_result_label.pack(side="left", padx=10, pady=10)
-
-        self._btn_export = ctk.CTkButton(
-            final_frame, text="Export Info to Excel",
-            font=ctk.CTkFont("Segoe UI", 16),
-            fg_color=BTN_EXP, hover_color=BTN_EXP_HOV, text_color="white",
-            width=180, height=40, corner_radius=8, command=self._on_export
-        )
-        self._btn_export.pack(side="right", padx=20, pady=10)
+            self.after(0, lambda: self._set_ui_busy(False))
 
     def check_device_connection(self):
         try:
@@ -2787,13 +705,26 @@ class App(ctk.CTk):
         )
         if file_path:
             self.ui_file_path.set(file_path)
-
+    
+    def _browse_file(self):
+        file_path = filedialog.askopenfilename(filetypes=[("Excel files", "*.xlsx")])
+        if file_path:
+            self.file_path.set(file_path)
+                   
     def start_binary_verification(self):
+        if not self.file_path.get():
+            messagebox.showerror("Error", "Please select an Excel file for binary verification.")
+            return
+            
         self._set_ui_busy(True)
         self.binary_result_label.configure(text="Loading...", text_color="black")
         threading.Thread(target=self._compare_versions, daemon=True).start()
 
     def start_ui_verification(self):
+        if not self.ui_file_path.get():
+            messagebox.showerror("Error", "Please select an Excel file for UI verification.")
+            return
+            
         self._set_ui_busy(True)
         self.ui_result_frame.configure(text="Loading...", text_color="black")
         threading.Thread(target=self.compare_ui_images, daemon=True).start()
@@ -2887,8 +818,6 @@ class App(ctk.CTk):
                     all_pass = False
 
             results.append("<<CLICK TO SHOW IMAGES>>")
-
-            # Thread-safe UI update
             self.after(0, lambda: self._update_ui_results_gui(results, all_pass))
 
         except ImportError:
@@ -2998,11 +927,8 @@ class App(ctk.CTk):
         try:
             import cv2
             windows_opened = False
-            
             for image_path in self.comparison_images:
-                # Convert to absolute path to guarantee it correctly finds the folder
                 abs_path = os.path.abspath(image_path)
-                
                 if os.path.exists(abs_path):
                     img = cv2.imread(abs_path)
                     if img is not None:
@@ -3011,45 +937,23 @@ class App(ctk.CTk):
                         if height > max_height:
                             scale = max_height / height
                             img = cv2.resize(img, (int(width * scale), max_height))
-                        
                         window_name = os.path.basename(abs_path)
-                        
                         try:
-                            # Attempt to display the image
                             cv2.imshow(window_name, img)
                             windows_opened = True
-                            
                             index = self.comparison_images.index(image_path)
                             cv2.moveWindow(window_name, 100 + (index % 2) * 600, 100 + (index // 2) * 500)
-                            
                         except cv2.error as cv_err:
-                            # Catch the specific Headless OpenCV error you are experiencing
                             if "not implemented" in str(cv_err).lower() or "rebuild the library" in str(cv_err).lower():
-                                messagebox.showerror(
-                                    "OpenCV Installation Error", 
-                                    "Your OpenCV installation does not support UI windows.\n"
-                                    "You currently have 'opencv-python-headless' installed.\n\n"
-                                    "To fix this, open your terminal and run:\n"
-                                    "pip uninstall opencv-python-headless\n"
-                                    "pip install opencv-python"
-                                )
+                                messagebox.showerror("OpenCV Installation Error", "Your OpenCV installation does not support UI windows.")
                                 return
                             else:
                                 raise cv_err
-                    else:
-                        messagebox.showerror("Error", f"Failed to read image data from: {abs_path}")
-                else:
-                    messagebox.showerror("Error", f"Image not found at: {abs_path}")
-
-            # Only pause the script if windows actually successfully opened
             if windows_opened:
                 cv2.waitKey(0)
                 cv2.destroyAllWindows()
-                
         except ImportError:
             messagebox.showerror("Error", "Required library (cv2) not available to show images")
-        except Exception as e:
-            messagebox.showerror("Error", f"An unexpected error occurred: {str(e)}")
 
     def capture_device_images(self):
         try:
@@ -3080,7 +984,7 @@ class App(ctk.CTk):
             run_adb("pull", "/sdcard/target3.png", "target_img")
             run_adb("pull", "/sdcard/target4.png", "target_img")
 
-            for target_path in glob('target_img/*.png'):
+            for target_path in glob(os.path.abspath(os.path.join('target_img', '*.png'))):
                 img = cv2.imread(target_path)
                 if img is not None:
                     cv2.imwrite(target_path, img)
@@ -3092,14 +996,9 @@ class App(ctk.CTk):
             self.after(0, lambda: messagebox.showerror("Error", f"Failed to capture screenshots: {str(e)}"))
             return False
 
-    def _browse_file(self):
-        file_path = filedialog.askopenfilename(filetypes=[("Excel files", "*.xlsx")])
-        if file_path:
-            self.file_path.set(file_path)
-
     def _compare_versions(self):
         if not self.file_path.get():
-            self.after(0, lambda: messagebox.showerror("Error", "Please select an Excel file"))
+            self.after(0, lambda: messagebox.showerror("Error", "Please select an Excel file for binary verification."))
             self.after(0, lambda: self.binary_result_label.configure(text="PASS/FAIL", text_color="black"))
             self.after(0, lambda: self._set_ui_busy(False))
             return
@@ -3153,7 +1052,6 @@ class App(ctk.CTk):
                 self.after(0, lambda: self._set_ui_busy(False))
                 return
 
-            # Thread-safe UI update
             self.after(0, lambda: self._update_binary_results_gui(matching_row))
 
         except zipfile.BadZipFile:
@@ -3273,6 +1171,8 @@ class App(ctk.CTk):
         buttons = [self._btn_fetch, self._btn_clear, self.info_button, self.bin_comp, self.ui_comp]
         if hasattr(self, '_btn_export'):
             buttons.append(self._btn_export)
+        if hasattr(self, 'btn_create_ref'):
+            buttons.append(self.btn_create_ref)
         for btn in buttons:
             if hasattr(btn, 'configure'):
                 btn.configure(state=state)
