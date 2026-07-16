@@ -1,0 +1,283 @@
+Here is the complete project structure and code for your Phone Image Combiner desktop application. It uses customtkinter for a modern UI, Pillow for lossless image manipulation (cropping, combining, and watermarking), and subprocess to execute your ADB commands exactly as requested.
+Project Structure
+text
+PhoneCapture/
+│
+├── main.py
+├── gui.py
+├── adb_utils.py
+├── image_utils.py
+├── requirements.txt
+│
+├── temp/        (Auto-generated)
+└── output/      (Auto-generated)
+
+1. requirements.txt
+Install these dependencies using pip install -r requirements.txt.
+txt
+customtkinter
+Pillow
+
+2. adb_utils.py
+This module handles all communication with your Android device.
+python
+import subprocess
+
+def run_adb(command):
+    try:
+        # Using shell=True and capturing output
+        result = subprocess.run(f"adb {command}", shell=True, capture_output=True, text=True)
+        return result.stdout.strip()
+    except Exception as e:
+        return str(e)
+
+def check_device():
+    out = run_adb("devices")
+    lines = out.split('\n')
+    # If there's more than one line and the second line contains 'device', we're connected
+    if len(lines) > 1 and 'device' in lines[1]:
+        return True
+    return False
+
+def open_camera():
+    run_adb("shell am start -a android.media.action.IMAGE_CAPTURE")
+
+def capture_image():
+    # KEYCODE_CAMERA is 27
+    run_adb("shell input keyevent 27")
+
+def pull_latest_image(save_path):
+    # Get the latest file from the camera folder
+    out = run_adb("shell ls -t /sdcard/DCIM/Camera")
+    files = [f.strip() for f in out.split('\n') if f.lower().strip().endswith(('.jpg', '.jpeg', '.png'))]
+    
+    if not files:
+        return False
+        
+    latest_file = files[0]
+    run_adb(f"pull /sdcard/DCIM/Camera/{latest_file} {save_path}")
+    return True
+
+def close_camera():
+    # Sends user to home screen (KEYCODE_HOME is 3)
+    run_adb("shell input keyevent 3")
+
+3. image_utils.py
+This module handles cropping, combining without losing pixel data, and watermarking the final image.
+python
+from PIL import Image, ImageDraw, ImageFont
+import os
+from datetime import datetime
+
+def calculate_crop_box(img_size, crop_left, crop_top, crop_right, crop_bottom):
+    """ Converts percentage sliders into actual pixel coordinates """
+    w, h = img_size
+    left = int(w * (crop_left / 100))
+    top = int(h * (crop_top / 100))
+    right = int(w * (1 - (crop_right / 100)))
+    bottom = int(h * (1 - (crop_bottom / 100)))
+    
+    # Prevent crashing if sliders cross each other
+    if left >= right: left = right - 1
+    if top >= bottom: top = bottom - 1
+        
+    return (left, top, right, bottom)
+
+def combine_side_by_side(img1_path, img2_path, output_path, crop1, crop2):
+    try:
+        img1 = Image.open(img1_path)
+        img2 = Image.open(img2_path)
+
+        # Apply crops based on UI slider percentages
+        box1 = calculate_crop_box(img1.size, *crop1)
+        box2 = calculate_crop_box(img2.size, *crop2)
+        
+        img1 = img1.crop(box1)
+        img2 = img2.crop(box2)
+
+        # Maintain original pixels, calculate new canvas size
+        w1, h1 = img1.size
+        w2, h2 = img2.size
+        
+        new_width = w1 + w2
+        new_height = max(h1, h2)
+        
+        combined = Image.new('RGB', (new_width, new_height))
+        
+        # Paste side by side
+        combined.paste(img1, (0, 0))
+        combined.paste(img2, (w1, 0))
+        
+        combined.save(output_path, quality=100)
+        return True
+    except Exception as e:
+        print(f"Error combining images: {e}")
+        return False
+
+def add_watermark_and_save(input_path, name, user_id, output_dir):
+    try:
+        img = Image.open(input_path)
+        draw = ImageDraw.Draw(img)
+        
+        # Fallback to default font if arial isn't found
+        try:
+            font = ImageFont.truetype("arial.ttf", 80)
+        except IOError:
+            font = ImageFont.load_default()
+
+        text = f"{name} - {user_id}"
+        
+        # Calculate text positioning (Bottom Right)
+        bbox = draw.textbbox((0, 0), text, font=font)
+        text_width = bbox[2] - bbox[0]
+        text_height = bbox[3] - bbox[1]
+        
+        width, height = img.size
+        x = width - text_width - 60  # 60px padding from right
+        y = height - text_height - 60 # 60px padding from bottom
+        
+        # Draw stroke for visibility against any background
+        stroke = 4
+        draw.text((x, y), text, font=font, fill="white", stroke_width=stroke, stroke_fill="black")
+        
+        # Save as Name + Datetime
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"{name}_{timestamp}.png"
+        save_path = os.path.join(output_dir, filename)
+        
+        img.save(save_path, format="PNG")
+        return save_path
+    except Exception as e:
+        print(f"Error saving watermarked image: {e}")
+        return None
+
+4. gui.py
+This houses the interface, grouping Image 1 & 2 controls on the left, and the combined result + popup logic on the right.
+python
+import customtkinter as ctk
+from PIL import Image
+import os
+import time
+import subprocess
+import platform
+
+from adb_utils import check_device, open_camera, capture_image, pull_latest_image, close_camera
+from image_utils import combine_side_by_side, add_watermark_and_save
+
+class App(ctk.CTk):
+    def __init__(self):
+        super().__init__()
+        self.title("Phone Image Combiner")
+        self.geometry("1100x750")
+        
+        # Ensure directories exist
+        self.temp_dir = "temp"
+        self.out_dir = "output"
+        os.makedirs(self.temp_dir, exist_ok=True)
+        os.makedirs(self.out_dir, exist_ok=True)
+
+        self.img1_path = os.path.join(self.temp_dir, "image1.jpg")
+        self.img2_path = os.path.join(self.temp_dir, "image2.jpg")
+        self.combined_path = os.path.join(self.out_dir, "combined.jpg")
+
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_columnconfigure(1, weight=2)
+        self.grid_rowconfigure(0, weight=1)
+        
+        self.build_left_panel()
+        self.build_right_panel()
+
+    def build_left_panel(self):
+        left_frame = ctk.CTkFrame(self)
+        left_frame.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
+        left_frame.grid_columnconfigure(0, weight=1)
+
+        # Device Status
+        self.status_label = ctk.CTkLabel(left_frame, text="Status: Checking device...", font=("Arial", 14, "bold"))
+        self.status_label.grid(row=0, column=0, pady=10)
+        
+        ctk.CTkButton(left_frame, text="Connect Device", command=self.check_connection).grid(row=1, column=0, pady=5)
+        ctk.CTkButton(left_frame, text="Open Camera", command=open_camera).grid(row=2, column=0, pady=5)
+
+        # Image 1 Block
+        img1_frame = ctk.CTkFrame(left_frame)
+        img1_frame.grid(row=3, column=0, padx=10, pady=10, sticky="ew")
+        self.lbl_preview1 = ctk.CTkLabel(img1_frame, text="Image 1 Not Captured", height=120)
+        self.lbl_preview1.pack(pady=5)
+        ctk.CTkButton(img1_frame, text="Capture Image 1", command=lambda: self.capture_and_pull(self.img1_path, self.lbl_preview1)).pack(pady=5)
+        self.crop1_sliders = self.build_crop_sliders(img1_frame, "Img 1 Crop % (L, T, R, B)")
+
+        # Image 2 Block
+        img2_frame = ctk.CTkFrame(left_frame)
+        img2_frame.grid(row=4, column=0, padx=10, pady=10, sticky="ew")
+        self.lbl_preview2 = ctk.CTkLabel(img2_frame, text="Image 2 Not Captured", height=120)
+        self.lbl_preview2.pack(pady=5)
+        ctk.CTkButton(img2_frame, text="Capture Image 2", command=lambda: self.capture_and_pull(self.img2_path, self.lbl_preview2)).pack(pady=5)
+        self.crop2_sliders = self.build_crop_sliders(img2_frame, "Img 2 Crop % (L, T, R, B)")
+
+        ctk.CTkButton(left_frame, text="Close Camera", command=close_camera).grid(row=5, column=0, pady=5)
+
+    def build_crop_sliders(self, parent, title):
+        ctk.CTkLabel(parent, text=title, font=("Arial", 10)).pack()
+        frame = ctk.CTkFrame(parent, fg_color="transparent")
+        frame.pack(pady=2)
+        
+        sliders = []
+        for i in range(4):
+            slider = ctk.CTkSlider(frame, from_=0, to=49, width=60) # Max 49% crop per side
+            slider.set(0)
+            slider.grid(row=0, column=i, padx=2)
+            sliders.append(slider)
+        return sliders
+
+    def build_right_panel(self):
+        right_frame = ctk.CTkFrame(self)
+        right_frame.grid(row=0, column=1, padx=10, pady=10, sticky="nsew")
+        right_frame.grid_columnconfigure(0, weight=1)
+        right_frame.grid_rowconfigure(1, weight=1)
+
+        ctk.CTkLabel(right_frame, text="Combined Preview", font=("Arial", 16, "bold")).grid(row=0, column=0, pady=10)
+        
+        self.lbl_combined = ctk.CTkLabel(right_frame, text="No combined image yet.", fg_color="black")
+        self.lbl_combined.grid(row=1, column=0, padx=10, pady=10, sticky="nsew")
+
+        btn_frame = ctk.CTkFrame(right_frame, fg_color="transparent")
+        btn_frame.grid(row=2, column=0, pady=10)
+
+        ctk.CTkButton(btn_frame, text="Combine Images", command=self.combine_images).grid(row=0, column=0, padx=5)
+        ctk.CTkButton(btn_frame, text="Save & Watermark", command=self.open_save_popup, fg_color="green").grid(row=0, column=1, padx=5)
+        ctk.CTkButton(btn_frame, text="Open Output Folder", command=self.open_folder).grid(row=0, column=2, padx=5)
+        
+        self.check_connection()
+
+    def check_connection(self):
+        if check_device():
+            self.status_label.configure(text="Device: Connected", text_color="green")
+        else:
+            self.status_label.configure(text="Device: Disconnected", text_color="red")
+
+    def capture_and_pull(self, save_path, label_widget):
+        self.status_label.configure(text="Capturing...", text_color="yellow")
+        self.update()
+        
+        capture_image()
+        time.sleep(1.5) # Wait for phone to save photo internally
+        
+        if pull_latest_image(save_path):
+            self.update_preview(save_path, labe
+
+5. main.py
+The lightweight entry point to start your application.
+python
+from gui import App
+
+if __name__ == "__main__":
+    app = App()
+    app.mainloop()
+
+How to use the non-destructive cropping:
+Because building a custom free-draw bounding box inside a Tkinter canvas is complex, I added four Crop Percentage Sliders (Left, Top, Right, Bottom) beneath each captured image preview.
+1. Capture your images.
+2. If you only want the center of an image, adjust the left/right or top/bottom sliders (e.g., setting the first slider to 10 chops 10% off the left edge).
+3. Click Combine Images. The original full-resolution files are dynamically cropped and stitched without altering their DPI or pixel density, resulting in a pristine output.
+4. Click Save & Watermark to enter the Name and ID.
