@@ -1,0 +1,244 @@
+To address these final polish requests, we will make four major updates:
+1. PyInstaller Safe Paths: We will use sys.executable and file to ensure that when you compile this to an .exe, the temp and output folders are created exactly next to the executable file, preventing permission errors or lost files.
+2. Symmetrical UI: We will restructure the layout into a perfectly symmetrical 3-column grid: [Image 1] - [Combined Preview] - [Image 2].
+3. Scaled OpenCV Cropping: We will dynamically downscale the image for the cv2.selectROI window so it fits on your screen. Once you draw the box, it maps those coordinates back to the original 4K/12MP image to perform a lossless, high-res crop.
+4. Save OCR Results: The OCR output will now be saved as a .txt file right next to your combined image in the output/ folder.
+Here are the updated files.
+1. image_utils.py (Updated Cropping Logic)
+This file now handles downscaling the image just for the OpenCV preview window, ensuring the crop tool fits on your screen.
+python
+import cv2
+import numpy as np
+from PIL import Image, ImageDraw, ImageFont
+import os
+from datetime import datetime
+
+def open_opencv_cropper(image_path):
+    """ Opens a scaled OpenCV window to draw a bounding box. """
+    img = cv2.imread(image_path)
+    if img is None:
+        return False
+        
+    # Scale down the image for display purposes only (max height 800px)
+    max_display_height = 800
+    scale = 1.0
+    
+    if img.shape[0] > max_display_height:
+        scale = max_display_height / img.shape[0]
+        
+    display_img = cv2.resize(img, (0, 0), fx=scale, fy=scale)
+    
+    window_name = f"Crop (Press ENTER to confirm, C to cancel)"
+    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+    
+    # Select ROI on the smaller display image
+    roi = cv2.selectROI(window_name, display_img, showCrosshair=True, fromCenter=False)
+    cv2.destroyWindow(window_name)
+    
+    # roi = (x, y, w, h)
+    if roi[2] > 0 and roi[3] > 0:
+        # Scale the coordinates back up to original resolution
+        x = int(roi[0] / scale)
+        y = int(roi[1] / scale)
+        w = int(roi[2] / scale)
+        h = int(roi[3] / scale)
+        
+        cropped = img[y:y+h, x:x+w]
+        cv2.imwrite(image_path, cropped) # Overwrite with original high-res cropped version
+        return True
+    return False
+
+def get_combined_image_cv2(img1_path, img2_path):
+    """ Combines images side-by-side in memory. Returns numpy array. """
+    if not os.path.exists(img1_path) or not os.path.exists(img2_path):
+        return None
+
+    img1 = cv2.imread(img1_path)
+    img2 = cv2.imread(img2_path)
+    
+    if img1 is None or img2 is None:
+        return None
+        
+    h1, w1 = img1.shape[:2]
+    h2, w2 = img2.shape[:2]
+    
+    max_h = max(h1, h2)
+    if h1 < max_h:
+        img1 = cv2.copyMakeBorder(img1, 0, max_h - h1, 0, 0, cv2.BORDER_CONSTANT, value=[0,0,0])
+    if h2 < max_h:
+        img2 = cv2.copyMakeBorder(img2, 0, max_h - h2, 0, 0, cv2.BORDER_CONSTANT, value=[0,0,0])
+        
+    return cv2.hconcat([img1, img2])
+
+def add_watermark_and_save(combined_cv2_img, name, user_id, output_dir):
+    """ Converts OpenCV image to Pillow for watermarking and saves to disk. """
+    combined_rgb = cv2.cvtColor(combined_cv2_img, cv2.COLOR_BGR2RGB)
+    pil_img = Image.fromarray(combined_rgb)
+    
+    draw = ImageDraw.Draw(pil_img)
+    try:
+        font = ImageFont.truetype("arial.ttf", 60)
+    except IOError:
+        font = ImageFont.load_default()
+        
+    text = f"{name} - {user_id}"
+    bbox = draw.textbbox((0, 0), text, font=font)
+    text_width = bbox[2] - bbox[0]
+    text_height = bbox[3] - bbox[1]
+    
+    width, height = pil_img.size
+    x = width - text_width - 60
+    y = height - text_height - 60
+    
+    draw.text((x, y), text, font=font, fill="white", stroke_width=4, stroke_fill="black")
+    
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    base_filename = f"{name}_{timestamp}"
+    
+    save_path = os.path.join(output_dir, f"{base_filename}.png")
+    pil_img.save(save_path, format="PNG")
+    
+    return save_path, base_filename
+
+2. gui.py (Symmetrical Layout & PyInstaller Paths)
+This updates the UI to a symmetrical 3-column layout and safely defines paths for PyInstaller executable compilation.
+python
+import sys, os
+from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
+                             QPushButton, QLabel, QLineEdit, QMessageBox, QDialog, QFormLayout)
+from PyQt5.QtGui import QPixmap, QImage
+from PyQt5.QtCore import Qt, QThread, pyqtSignal
+import cv2
+import concurrent.futures
+
+from adb_utils import get_connected_devices, capture_and_pull
+from image_utils import open_opencv_cropper, get_combined_image_cv2, add_watermark_and_save
+from ocr_utils import run_ocr_on_image
+
+# Safe base path for PyInstaller
+def get_app_dir():
+    if getattr(sys, 'frozen', False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+class CaptureWorker(QThread):
+    finished = pyqtSignal(bool)
+    
+    def __init__(self, devices, paths):
+        super().__init__()
+        self.devices = devices
+        self.paths = paths
+
+    def run(self):
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            future_to_device = {
+                executor.submit(capture_and_pull, self.devices[0], self.paths[0]): "Device 1",
+                executor.submit(capture_and_pull, self.devices[1], self.paths[1]): "Device 2"
+            }
+            results = [future.result() for future in concurrent.futures.as_completed(future_to_device)]
+        self.finished.emit(all(results))
+
+class OcrWorker(QThread):
+    finished = pyqtSignal(str, str)
+    
+    def __init__(self, path1, path2):
+        super().__init__()
+        self.path1 = path1
+        self.path2 = path2
+
+    def run(self):
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            future1 = executor.submit(run_ocr_on_image, self.path1)
+            future2 = executor.submit(run_ocr_on_image, self.path2)
+            
+            text1 = future1.result()
+            text2 = future2.result()
+        self.finished.emit(text1, text2)
+
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Phone Image Combiner")
+        self.setGeometry(100, 100, 1400, 800)
+        
+        # Setup paths using the safe app directory
+        app_dir = get_app_dir()
+        self.temp_dir = os.path.join(app_dir, "temp")
+        self.out_dir = os.path.join(app_dir, "output")
+        os.makedirs(self.temp_dir, exist_ok=True)
+        os.makedirs(self.out_dir, exist_ok=True)
+        
+        self.img1_path = os.path.join(self.temp_dir, "image1.jpg")
+        self.img2_path = os.path.join(self.temp_dir, "image2.jpg")
+        self.combined_cv2_img = None 
+        
+        self.init_ui()
+
+    def init_ui(self):
+        main_widget = QWidget()
+        self.setCentralWidget(main_widget)
+        main_layout = QVBoxLayout(main_widget)
+        
+        # --- TOP PANEL (Status & Capture) ---
+        top_panel = QVBoxLayout()
+        self.lbl_status = QLabel("Ready")
+        self.lbl_status.setAlignment(Qt.AlignCenter)
+        self.lbl_status.setStyleSheet("font-weight: bold; font-size: 16px;")
+        top_panel.addWidget(self.lbl_status)
+        
+        btn_capture = QPushButton("Simultaneous Capture (Both Devices)")
+        btn_capture.setMinimumHeight(40)
+        btn_capture.clicked.connect(self.start_capture)
+        top_panel.addWidget(btn_capture)
+        
+        main_layout.addLayout(top_panel)
+        
+        # --- MIDDLE PANEL (Symmetrical 3 Columns) ---
+        middle_panel = QHBoxLayout()
+        
+        # Column 1: Image 1
+        col1 = QVBoxLayout()
+        self.lbl_img1 = QLabel("Image 1")
+        self.lbl_img1.setAlignment(Qt.AlignCenter)
+        self.lbl_img1.setStyleSheet("border: 1px solid black;")
+        col1.addWidget(self.lbl_img1, 1)
+        
+        btn_crop1 = QPushButton("Crop Image 1")
+        btn_crop1.clicked.connect(lambda: self.trigger_crop(self.img1_path, self.lbl_img1))
+        col1.addWidget(btn_crop1)
+        middle_panel.addLayout(col1, 1)
+        
+        # Column 2: Combined Preview & Save
+        col2 = QVBoxLayout()
+        self.lbl_combined = QLabel("Combined Preview")
+        self.lbl_combined.setAlignment(Qt.AlignCenter)
+        self.lbl_combined.setStyleSheet("border: 2px solid #4CAF50; background-color: #222; color: white;")
+        col2.addWidget(self.lbl_combined, 1)
+        
+        btn_save = QPushButton("Save Image & Extract OCR")
+        btn_save.setMinimumHeight(40)
+        btn_save.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold;")
+        btn_save.clicked.connect(self.prompt_save)
+        col2.addWidget(btn_save)
+        middle_panel.addLayout(col2, 2) # Give center panel more space
+        
+        # Column 3: Image 2
+        col3 = QVBoxLayout()
+        self.lbl_img2 = QLabel("Image 2")
+        self.lbl_img2.setAlignment(Qt.AlignCenter)
+        self.lbl_img2.setStyleSheet("border: 1px solid black;")
+        col3.addWidget(self.lbl_img2, 1)
+        
+        btn_crop2 = QPushButton("Crop Image 2")
+        btn_crop2.clicked.connect(lambda: self.tri
+
+3. Packaging into .exe
+Because we added the get_app_dir() logic, you can safely package this into an executable using PyInstaller.
+Run this command in your terminal:
+bash
+pip install pyinstaller
+pyinstaller --noconsole --onefile main.py
+
+• The --noconsole flag hides the black command prompt window.
+• The --onefile flag packages everything into a single .exe file.
+• Once created, the .exe will be in the dist/ folder. When you run it, it will automatically create the temp/ and output/ folders right next to wherever you placed the .exe.
