@@ -1,0 +1,61 @@
+The "small blank window" usually happens if the main window isn't explicitly told to display itself (window.show()) or if the QApplication event loop isn't started properly.
+Here is the complete and correct main.py file to tie everything together. It initializes the PyQt application, instantiates the MainWindow from gui.py, maximizes the window so you have plenty of room to see the images, and starts the event loop.
+main.py
+python
+import sys
+import traceback
+from PyQt5.QtWidgets import QApplication, QMessageBox
+from gui import MainWindow
+
+def main():
+    # Set up global exception handling to catch crashes instead of getting a blank screen
+    def exception_hook(exctype, value, tb):
+        error_msg = "".join(traceback.format_exception(exctype, value, tb))
+        print(f"Uncaught exception:\n{error_msg}")
+        
+        # Create a basic message box to show the error
+        app = QApplication.instance()
+        if app:
+            msg = QMessageBox()
+            msg.setWindowTitle("Critical Error")
+            msg.setText("An unexpected error occurred during startup.")
+            msg.setDetailedText(error_msg)
+            msg.setIcon(QMessageBox.Critical)
+            msg.exec_()
+        sys.exit(1)
+
+    sys.excepthook = exception_hook
+
+    # 1. Create the QApplication instance
+    app = QApplication(sys.argv)
+    
+    # Optional: Apply a clean fusion style for a better look across Windows/Mac/Linux
+    app.setStyle("Fusion")
+
+    # 2. Instantiate the main window
+    window = MainWindow()
+    
+    # 3. Show the window (If this is missing, you get a blank/hidden app!)
+    window.show()
+    
+    # Optional: Maximize the window automatically on startup
+    window.showMaximized()
+
+    # 4. Execute the application event loop
+    sys.exit(app.exec_())
+
+if __name__ == "__main__":
+    main()
+
+How to Run and Test
+Make sure your files are in the exact same directory:
+1. main.py
+2. gui.py
+3. adb_utils.py
+4. image_utils.py
+5. ocr_utils.py
+Then, run the app using:
+bash
+python main.py
+
+Note: I added a global exception hook (sys.excepthook) to main.py. If you ever get a blank screen or a sudden crash again, this code will catch the exact error and display it in a popup box so you know exactly which line caused the problem!
