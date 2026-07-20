@@ -1,0 +1,174 @@
+import customtkinter as ctk
+from PIL import Image
+import os
+import time
+import subprocess
+import platform
+
+from adb_utils import check_device, open_camera, capture_image, pull_latest_image, close_camera
+from image_utils import combine_side_by_side, add_watermark_and_save
+
+class App(ctk.CTk):
+def init(self):
+super().init()
+self.title("Phone Image Combiner")
+self.geometry("1100x750")
+
+# Ensure directories exist
+self.temp_dir = "temp"
+self.out_dir = "output"
+os.makedirs(self.temp_dir, exist_ok=True)
+os.makedirs(self.out_dir, exist_ok=True)
+
+self.img1_path = os.path.join(self.temp_dir, "image1.jpg")
+self.img2_path = os.path.join(self.temp_dir, "image2.jpg")
+self.combined_path = os.path.join(self.out_dir, "combined.jpg")
+
+self.grid_columnconfigure(0, weight=1)
+self.grid_columnconfigure(1, weight=2)
+self.grid_rowconfigure(0, weight=1)
+
+self.build_left_panel()
+self.build_right_panel()
+
+def build_left_panel(self):
+left_frame = ctk.CTkFrame(self)
+left_frame.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
+left_frame.grid_columnconfigure(0, weight=1)
+
+# Device Status
+self.status_label = ctk.CTkLabel(left_frame, text="Status: Checking device...", font=("Arial", 14, "bold"))
+self.status_label.grid(row=0, column=0, pady=10)
+
+ctk.CTkButton(left_frame, text="Connect Device", command=self.check_connection).grid(row=1, column=0, pady=5)
+ctk.CTkButton(left_frame, text="Open Camera", command=open_camera).grid(row=2, column=0, pady=5)
+
+# Image 1 Block
+img1_frame = ctk.CTkFrame(left_frame)
+img1_frame.grid(row=3, column=0, padx=10, pady=10, sticky="ew")
+self.lbl_preview1 = ctk.CTkLabel(img1_frame, text="Image 1 Not Captured", height=120)
+self.lbl_preview1.pack(pady=5)
+ctk.CTkButton(img1_frame, text="Capture Image 1", command=lambda: self.capture_and_pull(self.img1_path, self.lbl_preview1)).pack(pady=5)
+self.crop1_sliders = self.build_crop_sliders(img1_frame, "Img 1 Crop % (L, T, R, B)")
+
+# Image 2 Block
+img2_frame = ctk.CTkFrame(left_frame)
+img2_frame.grid(row=4, column=0, padx=10, pady=10, sticky="ew")
+self.lbl_preview2 = ctk.CTkLabel(img2_frame, text="Image 2 Not Captured", height=120)
+self.lbl_preview2.pack(pady=5)
+ctk.CTkButton(img2_frame, text="Capture Image 2", command=lambda: self.capture_and_pull(self.img2_path, self.lbl_preview2)).pack(pady=5)
+self.crop2_sliders = self.build_crop_sliders(img2_frame, "Img 2 Crop % (L, T, R, B)")
+
+ctk.CTkButton(left_frame, text="Close Camera", command=close_camera).grid(row=5, column=0, pady=5)
+
+def build_crop_sliders(self, parent, title):
+ctk.CTkLabel(parent, text=title, font=("Arial", 10)).pack()
+frame = ctk.CTkFrame(parent, fg_color="transparent")
+frame.pack(pady=2)
+
+sliders = []
+for i in range(4):
+slider = ctk.CTkSlider(frame, from_=0, to=49, width=60) # Max 49% crop per side
+slider.set(0)
+slider.grid(row=0, column=i, padx=2)
+sliders.append(slider)
+return sliders
+
+def build_right_panel(self):
+right_frame = ctk.CTkFrame(self)
+right_frame.grid(row=0, column=1, padx=10, pady=10, sticky="nsew")
+right_frame.grid_columnconfigure(0, weight=1)
+right_frame.grid_rowconfigure(1, weight=1)
+
+ctk.CTkLabel(right_frame, text="Combined Preview", font=("Arial", 16, "bold")).grid(row=0, column=0, pady=10)
+
+self.lbl_combined = ctk.CTkLabel(right_frame, text="No combined image yet.", fg_color="black")
+self.lbl_combined.grid(row=1, column=0, padx=10, pady=10, sticky="nsew")
+
+btn_frame = ctk.CTkFrame(right_frame, fg_color="transparent")
+btn_frame.grid(row=2, column=0, pady=10)
+
+ctk.CTkButton(btn_frame, text="Combine Images", command=self.combine_images).grid(row=0, column=0, padx=5)
+ctk.CTkButton(btn_frame, text="Save & Watermark", command=self.open_save_popup, fg_color="green").grid(row=0, column=1, padx=5)
+ctk.CTkButton(btn_frame, text="Open Output Folder", command=self.open_folder).grid(row=0, column=2, padx=5)
+
+self.check_connection()
+
+def check_connection(self):
+if check_device():
+self.status_label.configure(text="Device: Connected", text_color="green")
+else:
+self.status_label.configure(text="Device: Disconnected", text_color="red")
+
+def capture_and_pull(self, save_path, label_widget):
+self.status_label.configure(text="Capturing...", text_color="yellow")
+self.update()
+
+capture_image()
+time.sleep(1.5) # Wait for phone to save photo internally
+
+if pull_latest_image(save_path):
+self.update_preview(save_path, label_widget, size=(200, 120))
+self.status_label.configure(text="Status: Image Captured", text_color="green")
+else:
+self.status_label.configure(text="Status: Failed to pull image", text_color="red")
+
+def update_preview(self, img_path, label_widget, size):
+if os.path.exists(img_path):
+img = ctk.CTkImage(light_image=Image.open(img_path), size=size)
+label_widget.configure(image=img, text="")
+
+def combine_images(self):
+if not (os.path.exists(self.img1_path) and os.path.exists(self.img2_path)):
+self.status_label.configure(text="Error: Capture both images first", text_color="red")
+return
+
+c1 = [s.get() for s in self.crop1_sliders]
+c2 = [s.get() for s in self.crop2_sliders]
+
+if combine_side_by_side(self.img1_path, self.img2_path, self.combined_path, c1, c2):
+# Show scaled preview
+self.update_preview(self.combined_path, self.lbl_combined, size=(600, 400))
+self.status_label.configure(text="Status: Images Combined Successfully", text_color="green")
+else:
+self.status_label.configure(text="Error combining images", text_color="red")
+
+def open_save_popup(self):
+if not os.path.exists(self.combined_path):
+self.status_label.configure(text="Error: Combine images first", text_color="red")
+return
+
+popup = ctk.CTkToplevel(self)
+popup.title("Save Image")
+popup.geometry("300x250")
+popup.attributes('-topmost', 'true')
+
+ctk.CTkLabel(popup, text="Enter Name:").pack(pady=(20, 5))
+name_entry = ctk.CTkEntry(popup)
+name_entry.pack(pady=5)
+
+ctk.CTkLabel(popup, text="Enter ID:").pack(pady=(10, 5))
+id_entry = ctk.CTkEntry(popup)
+id_entry.pack(pady=5)
+
+def save_action():
+name = name_entry.get()
+user_id = id_entry.get()
+if name and user_id:
+final_path = add_watermark_and_save(self.combined_path, name, user_id, self.out_dir)
+if final_path:
+self.status_label.configure(text=f"Saved: {os.path.basename(final_path)}", text_color="green")
+popup.destroy()
+else:
+self.status_label.configure(text="Error: Name and ID required", text_color="red")
+
+ctk.CTkButton(popup, text="Confirm Save", command=save_action).pack(pady=20)
+
+def open_folder(self):
+path = os.path.realpath(self.out_dir)
+if platform.system() == "Windows":
+os.startfile(path)
+elif platform.system() == "Darwin":
+subprocess.run(["open", path])
+else:
+subprocess.run(["xdg-open", path])
